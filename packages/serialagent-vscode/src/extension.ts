@@ -1,0 +1,525 @@
+import * as vscode from 'vscode';
+import { BridgeServer } from './bridge-server';
+import {
+  buildFirmwareConfigSummary,
+  FirmwareConfigAction,
+  FirmwareConfigRoute,
+  FirmwareConfigUiState,
+} from './firmware-config-model';
+import {
+  FirmwareConfigController,
+} from './firmware-config-wizard';
+import {
+  createFileSystemHost,
+  CustomCommandService,
+  readCustomCommandConfig,
+} from './custom-command';
+import { resolveKeilF7Command } from './keil-f7-action';
+import { KeilToolchainService } from './keil-toolchain';
+import { SerialPanelProvider } from './serial-panel-provider';
+import { SerialManager } from './serial-manager';
+
+const serialManager = new SerialManager();
+const bridgeOutputChannel = vscode.window.createOutputChannel('Serial Agent Bridge');
+const keilOutputChannel = vscode.window.createOutputChannel('Serial Agent Build');
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const extensionPkgVersion: string = (require('../package.json') as { version: string }).version;
+const bridgeServer = new BridgeServer(serialManager, bridgeOutputChannel, true, extensionPkgVersion);
+const keilToolchain = new KeilToolchainService(keilOutputChannel);
+const customCommandService = new CustomCommandService(keilOutputChannel);
+
+let statusBarItem: vscode.StatusBarItem;
+let bridgeStatusBarItem: vscode.StatusBarItem;
+let bridgeRunning = false;
+let keilTaskRunning = false;
+
+const SERIAL_PANEL_UI_STATE_KEY = 'serialPanelUiState';
+
+interface SerialPanelUiState extends FirmwareConfigUiState {
+  activePanel: 'firmware' | 'connection' | 'monitor' | null;
+  normalSendHeight?: number;
+}
+
+async function waitForWebviewPanelToBeActive(panel: vscode.WebviewPanel): Promise<void> {
+  if (panel.active) {
+    return;
+  }
+
+  await new Promise<void>((resolve) => {
+    const disposable = panel.onDidChangeViewState((event) => {
+      if (!event.webviewPanel.active) {
+        return;
+      }
+      disposable.dispose();
+      resolve();
+    });
+  });
+}
+
+async function revealAndLockPanel(panel: vscode.WebviewPanel): Promise<void> {
+  panel.reveal(undefined, false);
+  await waitForWebviewPanelToBeActive(panel);
+  await vscode.commands.executeCommand('workbench.action.lockEditorGroup');
+}
+
+function updateBridgeStatusBar(): void {
+  if (bridgeRunning) {
+    bridgeStatusBarItem.text = '$(broadcast) SA Bridge Ready';
+    bridgeStatusBarItem.tooltip = `Serial Agent Bridge: Running on port ${bridgeServer.port} (click to stop)`;
+    bridgeStatusBarItem.backgroundColor = undefined;
+    bridgeStatusBarItem.color = new vscode.ThemeColor('testing.iconPassed');
+  } else {
+    bridgeStatusBarItem.text = '$(circle-slash) SA Bridge Off';
+    bridgeStatusBarItem.tooltip = 'Serial Agent Bridge: Stopped (click to start)';
+    bridgeStatusBarItem.backgroundColor = undefined;
+    bridgeStatusBarItem.color = undefined;
+  }
+}
+
+function updateStatusBar(connected: boolean, port?: string, baudRate?: number): void {
+  if (connected && port) {
+    statusBarItem.text = `$(plug) ${port} @ ${baudRate}`;
+    statusBarItem.tooltip = 'Serial Agent: Connected (click to disconnect)';
+    statusBarItem.backgroundColor = undefined;
+  } else if (serialManager.isReconnecting) {
+    statusBarItem.text = '$(sync~spin) Reconnecting...';
+    statusBarItem.tooltip = 'Serial Agent: Attempting to reconnect';
+    statusBarItem.backgroundColor = new vscode.ThemeColor('statusBarItem.warningBackground');
+  } else {
+    statusBarItem.text = '$(debug-disconnect) Serial';
+    statusBarItem.tooltip = 'Serial Agent: Disconnected (click to open panel)';
+    statusBarItem.backgroundColor = undefined;
+  }
+}
+
+export function activate(context: vscode.ExtensionContext) {
+  bridgeStatusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 101);
+  bridgeStatusBarItem.command = 'serialagent.toggleBridge';
+  updateBridgeStatusBar();
+  bridgeStatusBarItem.show();
+  context.subscriptions.push(bridgeStatusBarItem);
+
+  statusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 100);
+  statusBarItem.command = 'serialagent.toggleConnection';
+  updateStatusBar(false);
+  statusBarItem.show();
+  context.subscriptions.push(statusBarItem);
+  context.subscriptions.push(bridgeOutputChannel);
+  context.subscriptions.push(keilOutputChannel);
+
+  const provider = new SerialPanelProvider(context, serialManager, updateStatusBar);
+  context.subscriptions.push(provider);
+  const readPanelUiState = (): SerialPanelUiState => context.globalState.get<SerialPanelUiState>(
+    SERIAL_PANEL_UI_STATE_KEY,
+    {
+      activePanel: 'monitor',
+      firmwareDrawerOpen: false,
+      firmwareDrawerRoute: 'home',
+      firmwareDrawerStack: ['home'],
+    },
+  );
+  const persistPanelUiState = async (
+    partial: Partial<SerialPanelUiState>,
+  ): Promise<SerialPanelUiState> => {
+    const nextState: SerialPanelUiState = {
+      ...readPanelUiState(),
+      ...partial,
+    };
+    await context.globalState.update(SERIAL_PANEL_UI_STATE_KEY, nextState);
+    provider.postMessage({ type: 'updateUiState', uiState: nextState });
+    return nextState;
+  };
+  const refreshFirmwareConfigState = async () => {
+    const snapshot = keilToolchain.getConfigSnapshot();
+    const summary = buildFirmwareConfigSummary(
+      snapshot,
+      await keilToolchain.checkConfig(),
+    );
+    provider.setFirmwareConfigState(snapshot, summary);
+    return { snapshot, summary };
+  };
+  const firmwareConfigController = new FirmwareConfigController(keilToolchain, refreshFirmwareConfigState);
+  const getConfiguredFlashMethod = (): 'jlink' | 'stlink' | 'openocd' => {
+    const configured = vscode.workspace.getConfiguration('serialagent').get<string>('flash.method', 'jlink');
+    if (configured === 'stlink') {
+      return 'stlink';
+    }
+    if (configured === 'openocd') {
+      return 'openocd';
+    }
+    return 'jlink';
+  };
+  const getConfiguredFlashLabel = (): string => {
+    const flashMethod = getConfiguredFlashMethod();
+    if (flashMethod === 'stlink') {
+      return 'ST-Link';
+    }
+    if (flashMethod === 'openocd') {
+      return 'OpenOCD';
+    }
+    return 'JLink';
+  };
+
+  const withKeilTaskLock = async <T>(
+    taskName: string,
+    runner: () => Promise<T>,
+    revealOutput: boolean,
+  ): Promise<T> => {
+    if (keilTaskRunning) {
+      throw new Error('KEIL_TASK_BUSY: Build/Flash task is running, please wait...');
+    }
+
+    keilTaskRunning = true;
+    provider.postMessage({ type: 'keilBusy', busy: true, task: taskName });
+    if (revealOutput) { keilOutputChannel.show(true); }
+    keilOutputChannel.appendLine(`[Serial Agent] ${taskName} started at ${new Date().toLocaleString()}`);
+
+    try {
+      const result = await runner();
+      keilOutputChannel.appendLine(`[Serial Agent] ${taskName} finished successfully.`);
+      return result;
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      keilOutputChannel.appendLine(`[Serial Agent] ${taskName} failed: ${msg}`);
+      throw err;
+    } finally {
+      keilTaskRunning = false;
+      provider.postMessage({ type: 'keilBusy', busy: false, task: taskName });
+    }
+  };
+
+  const runKeilTaskUi = async (taskName: string, runner: () => Promise<void>): Promise<void> => {
+    try {
+      await withKeilTaskLock(taskName, runner, true);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (msg.includes('KEIL_TASK_BUSY')) {
+        vscode.window.showWarningMessage('[Serial Agent] Build/Flash task is running, please wait...');
+        return;
+      }
+      vscode.window.showErrorMessage(`[Serial Agent] ${taskName} failed: ${msg}`);
+    }
+  };
+  const expandMonitorIfEnabled = async (): Promise<void> => {
+    const expandMonitor = vscode.workspace.getConfiguration('serialagent').get<boolean>(
+      'keil.expandMonitorOnBuildFlash',
+      true,
+    );
+    if (!expandMonitor) {
+      return;
+    }
+    await persistPanelUiState({
+      activePanel: 'monitor',
+      firmwareDrawerOpen: false,
+    });
+  };
+  const ensureKeilConfigIdle = (): boolean => {
+    if (!keilTaskRunning) {
+      return true;
+    }
+
+    vscode.window.showWarningMessage('[Serial Agent] Build/Flash task is running, please wait before changing config.');
+    return false;
+  };
+  const handleFirmwareConfigAction = async (action: FirmwareConfigAction): Promise<void> => {
+    const bypassIdleActions = new Set(['runConfigCheck', 'openAdvancedSettings']);
+    if (!bypassIdleActions.has(action) && !ensureKeilConfigIdle()) {
+      return;
+    }
+
+    try {
+      const result = await firmwareConfigController.handleAction(action);
+      if (result?.nextRoute) {
+        const nextRoute: FirmwareConfigRoute = result.nextRoute;
+        const nextStack: FirmwareConfigRoute[] = nextRoute === 'jlink' || nextRoute === 'stlink' || nextRoute === 'openocd'
+          ? ['home', 'flash', nextRoute]
+          : ['home', nextRoute];
+        await persistPanelUiState({
+          firmwareDrawerOpen: true,
+          firmwareDrawerRoute: nextRoute,
+          firmwareDrawerStack: nextStack,
+        });
+      }
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      vscode.window.showErrorMessage(`[Serial Agent] Build/Flash config failed: ${msg}`);
+    }
+  };
+
+  context.subscriptions.push(
+    vscode.window.registerWebviewViewProvider(SerialPanelProvider.viewType, provider, {
+      webviewOptions: { retainContextWhenHidden: true },
+    }),
+  );
+
+  bridgeServer.setOnUiClear(() => {
+    provider.postMessage({ type: 'clearLog' });
+  });
+  bridgeServer.setKeilApi({
+    isBusy: () => keilTaskRunning,
+    checkConfig: async () => keilToolchain.checkConfig(),
+    build: async () => withKeilTaskLock('Keil Build(API)', () => keilToolchain.build(), false),
+    flash: async (artifactPath?: string) => withKeilTaskLock(`${getConfiguredFlashLabel()} Flash(API)`, () => keilToolchain.flash(artifactPath), false),
+    buildAndFlash: async () => withKeilTaskLock('Build + Flash(API)', () => keilToolchain.buildAndFlash(), false),
+    runCustomCommand: async () => withKeilTaskLock('Custom Command(API)', () => runCustomCommand(), false),
+  });
+  bridgeServer.start().then(() => {
+    bridgeRunning = true;
+    updateBridgeStatusBar();
+    bridgeOutputChannel.appendLine(`[Serial Agent Bridge] Token: ${bridgeServer.token}`);
+  }).catch((err) => {
+    bridgeRunning = false;
+    updateBridgeStatusBar();
+    bridgeOutputChannel.appendLine(`[Serial Agent Bridge] Start failed: ${err}`);
+    vscode.window.showWarningMessage('[Serial Agent] Bridge Server failed to start. MCP integration unavailable.');
+  });
+
+  context.subscriptions.push(
+    vscode.commands.registerCommand('serialagent.refreshPorts', async () => {
+      await provider.refreshPortList({ forceFull: true });
+    }),
+  );
+
+  context.subscriptions.push(
+    vscode.commands.registerCommand('serialagent.toggleConnection', () => {
+      if (serialManager.isConnected) {
+        void vscode.commands.executeCommand('serialagent.disconnect');
+      } else {
+        void vscode.commands.executeCommand('serialagent.serialPanel.focus');
+      }
+    }),
+  );
+
+  context.subscriptions.push(
+    vscode.commands.registerCommand('serialagent.disconnect', async () => {
+      await serialManager.disconnect();
+    }),
+  );
+
+  context.subscriptions.push(
+    vscode.commands.registerCommand('serialagent.clearLog', () => {
+      serialManager.clearLog();
+      serialManager.resetCounters();
+      provider.postMessage({ type: 'clearLog' });
+    }),
+  );
+
+  context.subscriptions.push(
+    vscode.commands.registerCommand('serialagent.keil.openSettings', () => {
+      keilToolchain.openSettings();
+    }),
+  );
+
+  context.subscriptions.push(
+    vscode.commands.registerCommand('serialagent.keil.configureInteractive', async () => {
+      if (!ensureKeilConfigIdle()) {
+        return;
+      }
+      try {
+        await persistPanelUiState({
+          activePanel: 'firmware',
+          firmwareDrawerOpen: true,
+          firmwareDrawerRoute: 'home',
+          firmwareDrawerStack: ['home'],
+        });
+        await refreshFirmwareConfigState();
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        vscode.window.showErrorMessage(`[Serial Agent] Build/Flash config failed: ${msg}`);
+      }
+    }),
+  );
+
+  context.subscriptions.push(
+    vscode.commands.registerCommand('serialagent.keil.savePanelUiState', async (partial?: Partial<SerialPanelUiState>) => {
+      if (!partial || typeof partial !== 'object') {
+        return readPanelUiState();
+      }
+      return persistPanelUiState(partial);
+    }),
+  );
+
+  context.subscriptions.push(
+    vscode.commands.registerCommand('serialagent.keil.firmwareConfigAction', async (payload?: { action?: FirmwareConfigAction } | FirmwareConfigAction) => {
+      const action = typeof payload === 'string' ? payload : payload?.action;
+      if (!action) {
+        throw new Error('Missing firmware config action payload.');
+      }
+      await handleFirmwareConfigAction(action);
+    }),
+  );
+
+  context.subscriptions.push(
+    vscode.commands.registerCommand('serialagent.keil.checkConfig', async () => {
+      try {
+        await firmwareConfigController.runCheck(true);
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        vscode.window.showErrorMessage(`[Serial Agent] Config check failed: ${msg}`);
+      }
+    }),
+  );
+
+  context.subscriptions.push(
+    vscode.commands.registerCommand('serialagent.keil.selectJlinkDevice', async () => {
+      if (getConfiguredFlashMethod() !== 'jlink') {
+        vscode.window.showWarningMessage('[Serial Agent] JLink CPU Name is only used when serialagent.flash.method = jlink.');
+        return;
+      }
+      await handleFirmwareConfigAction('pickJlinkDevice');
+    }),
+  );
+
+  context.subscriptions.push(
+    vscode.commands.registerCommand('serialagent.keil.build', async () => {
+      await runKeilTaskUi('Keil Build', async () => {
+        const result = await keilToolchain.build();
+        vscode.window.showInformationMessage(`[Serial Agent] Build OK: ${result.artifactPath}`);
+      });
+    }),
+  );
+
+  context.subscriptions.push(
+    vscode.commands.registerCommand('serialagent.keil.flash', async () => {
+      await expandMonitorIfEnabled();
+      await runKeilTaskUi(`${getConfiguredFlashLabel()} Flash`, async () => {
+        const result = await keilToolchain.flash();
+        vscode.window.showInformationMessage(`[Serial Agent] ${(result.flasher ?? getConfiguredFlashMethod()).toUpperCase()} Flash OK: ${result.artifactPath}`);
+      });
+    }),
+  );
+
+  context.subscriptions.push(
+    vscode.commands.registerCommand('serialagent.keil.buildAndFlash', async () => {
+      await expandMonitorIfEnabled();
+      await runKeilTaskUi('Build + Flash', async () => {
+        const result = await keilToolchain.buildAndFlash();
+        vscode.window.showInformationMessage(`[Serial Agent] Build+${(result.flasher ?? getConfiguredFlashMethod()).toUpperCase()} Flash OK: ${result.artifactPath}`);
+      });
+    }),
+  );
+
+  const runCustomCommand = async () => {
+    const config = vscode.workspace.getConfiguration('serialagent');
+    return customCommandService.run(
+      readCustomCommandConfig((key, defaultValue) => config.get(key, defaultValue) as typeof defaultValue),
+      createFileSystemHost({
+        workspaceRoot: vscode.workspace.workspaceFolders?.[0]?.uri.fsPath,
+        isTrusted: vscode.workspace.isTrusted,
+      }),
+    );
+  };
+
+  context.subscriptions.push(
+    vscode.commands.registerCommand('serialagent.custom.run', async () => {
+      await expandMonitorIfEnabled();
+      await runKeilTaskUi('Custom Command', async () => {
+        const result = await runCustomCommand();
+        vscode.window.showInformationMessage(`[Serial Agent] Custom OK: ${result.preview}`);
+      });
+    }),
+  );
+
+  context.subscriptions.push(
+    vscode.commands.registerCommand('serialagent.keil.runF7Action', async () => {
+      try {
+        const action = vscode.workspace.getConfiguration('serialagent').get<string>('keil.f7Action', 'build');
+        const command = resolveKeilF7Command(action);
+        await vscode.commands.executeCommand(command);
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        vscode.window.showErrorMessage(`[Serial Agent] F7 action failed: ${msg}`);
+      }
+    }),
+  );
+
+  context.subscriptions.push(
+    vscode.commands.registerCommand('serialagent.toggleBridge', async () => {
+      if (bridgeRunning) {
+        await bridgeServer.stop();
+        bridgeRunning = false;
+        updateBridgeStatusBar();
+        bridgeOutputChannel.appendLine('[Serial Agent Bridge] Stopped by user');
+      } else {
+        try {
+          await bridgeServer.start();
+          bridgeRunning = true;
+          updateBridgeStatusBar();
+          bridgeOutputChannel.appendLine(`[Serial Agent Bridge] Restarted, Token: ${bridgeServer.token}`);
+        } catch (err: unknown) {
+          bridgeRunning = false;
+          updateBridgeStatusBar();
+          const msg = err instanceof Error ? err.message : String(err);
+          vscode.window.showErrorMessage(`[Serial Agent] Bridge Server failed to start: ${msg}`);
+        }
+      }
+    }),
+  );
+
+  context.subscriptions.push(
+    vscode.commands.registerCommand('serialagent.openInTab', async () => {
+      if (provider.panel) {
+        await revealAndLockPanel(provider.panel);
+        return;
+      }
+
+      const lastVisibleColumn = Math.max(
+        ...vscode.window.visibleTextEditors.map((editor) => editor.viewColumn || 0),
+        0,
+      );
+      const hasVisibleEditors = vscode.window.visibleTextEditors.length > 0;
+
+      if (!hasVisibleEditors) {
+        await vscode.commands.executeCommand('workbench.action.newGroupRight');
+      }
+
+      const targetColumn = hasVisibleEditors
+        ? Math.max(lastVisibleColumn + 1, 1)
+        : vscode.ViewColumn.Two;
+
+      const panel = vscode.window.createWebviewPanel(
+        SerialPanelProvider.panelViewType,
+        'Serial Agent',
+        targetColumn,
+        {
+          enableScripts: true,
+          retainContextWhenHidden: true,
+          localResourceRoots: [context.extensionUri],
+        },
+      );
+
+      panel.iconPath = {
+        light: vscode.Uri.joinPath(context.extensionUri, 'media', 'SerialAgent.png'),
+        dark: vscode.Uri.joinPath(context.extensionUri, 'media', 'SerialAgent.png'),
+      };
+
+      provider.resolveWebviewPanel(panel);
+      panel.onDidDispose(() => {
+        provider.clearPanel();
+      });
+      await revealAndLockPanel(panel);
+    }),
+  );
+
+  context.subscriptions.push(
+    vscode.workspace.onDidChangeConfiguration((event) => {
+      if (event.affectsConfiguration('serialagent')) {
+        void refreshFirmwareConfigState();
+      }
+      if (
+        event.affectsConfiguration('serialagent.portAutoRefresh')
+        || event.affectsConfiguration('serialagent.portRefreshIntervalMs')
+        || event.affectsConfiguration('serialagent.portRefreshMetadataIntervalMs')
+      ) {
+        provider.handlePortRefreshConfigChange();
+      }
+    }),
+  );
+
+  void refreshFirmwareConfigState();
+}
+
+export async function deactivate(): Promise<void> {
+  await bridgeServer.stop();
+  await serialManager.disconnect();
+}

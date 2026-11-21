@@ -1,0 +1,57 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+out/
+
+# Build / release artifacts
+dist-bridge/
+*.vsix
+
+# Local release bundles (use GitHub Releases instead)
+__Release/
+
+# IDE
+.vscode/
+!packages/serialagent-vscode/.vscode/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# npm
+*.tgz
+
+# VS Code Extension
+packages/serialagent-vscode/vsix-package-backup/
+
+# Keil Project - freertos_hello
+_KeilProject/freertos_hello/
+
+# Reference folder
+_Reference/
+_KeilProject
+
+# AI IDE / agent tooling (local only — never commit)
+.cursor/
+.cursorrules
+.cursorignore
+.codex/
+.codex-*/
+.codex-npx-probe/
+.codex-tmp/
+.claude/
+.windsurf/
+.windsurfrules
+.agents/
+.aider*
+.continue/
+.playwright-cli/
+__coding_plan/
+prodoc/
+
+# AI assistant instruction files (local copies for agents)
+AGENTS.md
+CLAUDE.md
+GEMINI.md

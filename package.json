@@ -1,0 +1,31 @@
+{
+  "name": "serial-agent-monorepo",
+  "version": "1.1.0",
+  "private": true,
+  "description": "Serial Agent monorepo - VS Code extension, MCP server, and skill source",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Rance-OwO/Serial-Agent"
+  },
+  "workspaces": [
+    "packages/serialagent-mcp",
+    "packages/serialagent-vscode"
+  ],
+  "scripts": {
+    "build": "npm run build --workspaces",
+    "clean": "npm run clean --workspaces --if-present",
+    "watch": "npm run watch --workspaces --if-present",
+    "bridge:build": "tsc -p tsconfig.bridge.json",
+    "bridge": "npm run bridge:build && node dist-bridge/tests/test-bridge-real-hw.js",
+    "test:e2e:keil-bootlog": "node tests/e2e-keil-flash-bootlog.js",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage"
+  },
+  "author": "",
+  "license": "MIT",
+  "devDependencies": {
+    "@vitest/coverage-v8": "^4.0.18",
+    "vitest": "^4.0.18"
+  }
+}
