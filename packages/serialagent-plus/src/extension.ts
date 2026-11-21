@@ -1,44 +1,17 @@
 import * as vscode from 'vscode';
 import { BridgeServer } from './bridge-server';
-import {
-  buildFirmwareConfigSummary,
-  FirmwareConfigAction,
-  FirmwareConfigRoute,
-  FirmwareConfigUiState,
-} from './firmware-config-model';
-import {
-  FirmwareConfigController,
-} from './firmware-config-wizard';
-import {
-  createFileSystemHost,
-  CustomCommandService,
-  readCustomCommandConfig,
-} from './custom-command';
-import { resolveKeilF7Command } from './keil-f7-action';
-import { KeilToolchainService } from './keil-toolchain';
 import { SerialPanelProvider } from './serial-panel-provider';
 import { SerialManager } from './serial-manager';
 
 const serialManager = new SerialManager();
 const bridgeOutputChannel = vscode.window.createOutputChannel('Serial Agent Plus Bridge');
-const keilOutputChannel = vscode.window.createOutputChannel('Serial Agent Plus Build');
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const extensionPkgVersion: string = (require('../package.json') as { version: string }).version;
 const bridgeServer = new BridgeServer(serialManager, bridgeOutputChannel, true, extensionPkgVersion);
-const keilToolchain = new KeilToolchainService(keilOutputChannel);
-const customCommandService = new CustomCommandService(keilOutputChannel);
 
 let statusBarItem: vscode.StatusBarItem;
 let bridgeStatusBarItem: vscode.StatusBarItem;
 let bridgeRunning = false;
-let keilTaskRunning = false;
-
-const SERIAL_PANEL_UI_STATE_KEY = 'serialPanelUiState';
-
-interface SerialPanelUiState extends FirmwareConfigUiState {
-  activePanel: 'firmware' | 'connection' | 'monitor' | null;
-  normalSendHeight?: number;
-}
 
 async function waitForWebviewPanelToBeActive(panel: vscode.WebviewPanel): Promise<void> {
   if (panel.active) {
@@ -105,147 +78,9 @@ export function activate(context: vscode.ExtensionContext) {
   statusBarItem.show();
   context.subscriptions.push(statusBarItem);
   context.subscriptions.push(bridgeOutputChannel);
-  context.subscriptions.push(keilOutputChannel);
 
   const provider = new SerialPanelProvider(context, serialManager, updateStatusBar);
   context.subscriptions.push(provider);
-  const readPanelUiState = (): SerialPanelUiState => context.globalState.get<SerialPanelUiState>(
-    SERIAL_PANEL_UI_STATE_KEY,
-    {
-      activePanel: 'monitor',
-      firmwareDrawerOpen: false,
-      firmwareDrawerRoute: 'home',
-      firmwareDrawerStack: ['home'],
-    },
-  );
-  const persistPanelUiState = async (
-    partial: Partial<SerialPanelUiState>,
-  ): Promise<SerialPanelUiState> => {
-    const nextState: SerialPanelUiState = {
-      ...readPanelUiState(),
-      ...partial,
-    };
-    await context.globalState.update(SERIAL_PANEL_UI_STATE_KEY, nextState);
-    provider.postMessage({ type: 'updateUiState', uiState: nextState });
-    return nextState;
-  };
-  const refreshFirmwareConfigState = async () => {
-    const snapshot = keilToolchain.getConfigSnapshot();
-    const summary = buildFirmwareConfigSummary(
-      snapshot,
-      await keilToolchain.checkConfig(),
-    );
-    provider.setFirmwareConfigState(snapshot, summary);
-    return { snapshot, summary };
-  };
-  const firmwareConfigController = new FirmwareConfigController(keilToolchain, refreshFirmwareConfigState);
-  const getConfiguredFlashMethod = (): 'jlink' | 'stlink' | 'openocd' => {
-    const configured = vscode.workspace.getConfiguration('serialagent').get<string>('flash.method', 'jlink');
-    if (configured === 'stlink') {
-      return 'stlink';
-    }
-    if (configured === 'openocd') {
-      return 'openocd';
-    }
-    return 'jlink';
-  };
-  const getConfiguredFlashLabel = (): string => {
-    const flashMethod = getConfiguredFlashMethod();
-    if (flashMethod === 'stlink') {
-      return 'ST-Link';
-    }
-    if (flashMethod === 'openocd') {
-      return 'OpenOCD';
-    }
-    return 'JLink';
-  };
-
-  const withKeilTaskLock = async <T>(
-    taskName: string,
-    runner: () => Promise<T>,
-    revealOutput: boolean,
-  ): Promise<T> => {
-    if (keilTaskRunning) {
-      throw new Error('KEIL_TASK_BUSY: Build/Flash task is running, please wait...');
-    }
-
-    keilTaskRunning = true;
-    provider.postMessage({ type: 'keilBusy', busy: true, task: taskName });
-    if (revealOutput) { keilOutputChannel.show(true); }
-    keilOutputChannel.appendLine(`[Serial Agent Plus] ${taskName} started at ${new Date().toLocaleString()}`);
-
-    try {
-      const result = await runner();
-      keilOutputChannel.appendLine(`[Serial Agent Plus] ${taskName} finished successfully.`);
-      return result;
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : String(err);
-      keilOutputChannel.appendLine(`[Serial Agent Plus] ${taskName} failed: ${msg}`);
-      throw err;
-    } finally {
-      keilTaskRunning = false;
-      provider.postMessage({ type: 'keilBusy', busy: false, task: taskName });
-    }
-  };
-
-  const runKeilTaskUi = async (taskName: string, runner: () => Promise<void>): Promise<void> => {
-    try {
-      await withKeilTaskLock(taskName, runner, true);
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : String(err);
-      if (msg.includes('KEIL_TASK_BUSY')) {
-        vscode.window.showWarningMessage('[Serial Agent Plus] Build/Flash task is running, please wait...');
-        return;
-      }
-      vscode.window.showErrorMessage(`[Serial Agent Plus] ${taskName} failed: ${msg}`);
-    }
-  };
-  const expandMonitorIfEnabled = async (): Promise<void> => {
-    const expandMonitor = vscode.workspace.getConfiguration('serialagent').get<boolean>(
-      'keil.expandMonitorOnBuildFlash',
-      true,
-    );
-    if (!expandMonitor) {
-      return;
-    }
-    await persistPanelUiState({
-      activePanel: 'monitor',
-      firmwareDrawerOpen: false,
-    });
-  };
-  const ensureKeilConfigIdle = (): boolean => {
-    if (!keilTaskRunning) {
-      return true;
-    }
-
-    vscode.window.showWarningMessage('[Serial Agent Plus] Build/Flash task is running, please wait before changing config.');
-    return false;
-  };
-  const handleFirmwareConfigAction = async (action: FirmwareConfigAction): Promise<void> => {
-    const bypassIdleActions = new Set(['runConfigCheck', 'openAdvancedSettings']);
-    if (!bypassIdleActions.has(action) && !ensureKeilConfigIdle()) {
-      return;
-    }
-
-    try {
-      const result = await firmwareConfigController.handleAction(action);
-      if (result?.nextRoute) {
-        const nextRoute: FirmwareConfigRoute = result.nextRoute;
-        const nextStack: FirmwareConfigRoute[] = nextRoute === 'jlink' || nextRoute === 'stlink' || nextRoute === 'openocd'
-          ? ['home', 'flash', nextRoute]
-          : ['home', nextRoute];
-        await persistPanelUiState({
-          firmwareDrawerOpen: true,
-          firmwareDrawerRoute: nextRoute,
-          firmwareDrawerStack: nextStack,
-        });
-      }
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : String(err);
-      vscode.window.showErrorMessage(`[Serial Agent Plus] Build/Flash config failed: ${msg}`);
-    }
-  };
-
   context.subscriptions.push(
     vscode.window.registerWebviewViewProvider(SerialPanelProvider.viewType, provider, {
       webviewOptions: { retainContextWhenHidden: true },
@@ -254,14 +89,6 @@ export function activate(context: vscode.ExtensionContext) {
 
   bridgeServer.setOnUiClear(() => {
     provider.postMessage({ type: 'clearLog' });
-  });
-  bridgeServer.setKeilApi({
-    isBusy: () => keilTaskRunning,
-    checkConfig: async () => keilToolchain.checkConfig(),
-    build: async () => withKeilTaskLock('Keil Build(API)', () => keilToolchain.build(), false),
-    flash: async (artifactPath?: string) => withKeilTaskLock(`${getConfiguredFlashLabel()} Flash(API)`, () => keilToolchain.flash(artifactPath), false),
-    buildAndFlash: async () => withKeilTaskLock('Build + Flash(API)', () => keilToolchain.buildAndFlash(), false),
-    runCustomCommand: async () => withKeilTaskLock('Custom Command(API)', () => runCustomCommand(), false),
   });
   bridgeServer.start().then(() => {
     bridgeRunning = true;
@@ -301,135 +128,6 @@ export function activate(context: vscode.ExtensionContext) {
       serialManager.clearLog();
       serialManager.resetCounters();
       provider.postMessage({ type: 'clearLog' });
-    }),
-  );
-
-  context.subscriptions.push(
-    vscode.commands.registerCommand('serialagent.keil.openSettings', () => {
-      keilToolchain.openSettings();
-    }),
-  );
-
-  context.subscriptions.push(
-    vscode.commands.registerCommand('serialagent.keil.configureInteractive', async () => {
-      if (!ensureKeilConfigIdle()) {
-        return;
-      }
-      try {
-        await persistPanelUiState({
-          activePanel: 'firmware',
-          firmwareDrawerOpen: true,
-          firmwareDrawerRoute: 'home',
-          firmwareDrawerStack: ['home'],
-        });
-        await refreshFirmwareConfigState();
-      } catch (err: unknown) {
-        const msg = err instanceof Error ? err.message : String(err);
-        vscode.window.showErrorMessage(`[Serial Agent Plus] Build/Flash config failed: ${msg}`);
-      }
-    }),
-  );
-
-  context.subscriptions.push(
-    vscode.commands.registerCommand('serialagent.keil.savePanelUiState', async (partial?: Partial<SerialPanelUiState>) => {
-      if (!partial || typeof partial !== 'object') {
-        return readPanelUiState();
-      }
-      return persistPanelUiState(partial);
-    }),
-  );
-
-  context.subscriptions.push(
-    vscode.commands.registerCommand('serialagent.keil.firmwareConfigAction', async (payload?: { action?: FirmwareConfigAction } | FirmwareConfigAction) => {
-      const action = typeof payload === 'string' ? payload : payload?.action;
-      if (!action) {
-        throw new Error('Missing firmware config action payload.');
-      }
-      await handleFirmwareConfigAction(action);
-    }),
-  );
-
-  context.subscriptions.push(
-    vscode.commands.registerCommand('serialagent.keil.checkConfig', async () => {
-      try {
-        await firmwareConfigController.runCheck(true);
-      } catch (err: unknown) {
-        const msg = err instanceof Error ? err.message : String(err);
-        vscode.window.showErrorMessage(`[Serial Agent Plus] Config check failed: ${msg}`);
-      }
-    }),
-  );
-
-  context.subscriptions.push(
-    vscode.commands.registerCommand('serialagent.keil.selectJlinkDevice', async () => {
-      if (getConfiguredFlashMethod() !== 'jlink') {
-        vscode.window.showWarningMessage('[Serial Agent Plus] JLink CPU Name is only used when serialagent.flash.method = jlink.');
-        return;
-      }
-      await handleFirmwareConfigAction('pickJlinkDevice');
-    }),
-  );
-
-  context.subscriptions.push(
-    vscode.commands.registerCommand('serialagent.keil.build', async () => {
-      await runKeilTaskUi('Keil Build', async () => {
-        const result = await keilToolchain.build();
-        vscode.window.showInformationMessage(`[Serial Agent Plus] Build OK: ${result.artifactPath}`);
-      });
-    }),
-  );
-
-  context.subscriptions.push(
-    vscode.commands.registerCommand('serialagent.keil.flash', async () => {
-      await expandMonitorIfEnabled();
-      await runKeilTaskUi(`${getConfiguredFlashLabel()} Flash`, async () => {
-        const result = await keilToolchain.flash();
-        vscode.window.showInformationMessage(`[Serial Agent Plus] ${(result.flasher ?? getConfiguredFlashMethod()).toUpperCase()} Flash OK: ${result.artifactPath}`);
-      });
-    }),
-  );
-
-  context.subscriptions.push(
-    vscode.commands.registerCommand('serialagent.keil.buildAndFlash', async () => {
-      await expandMonitorIfEnabled();
-      await runKeilTaskUi('Build + Flash', async () => {
-        const result = await keilToolchain.buildAndFlash();
-        vscode.window.showInformationMessage(`[Serial Agent Plus] Build+${(result.flasher ?? getConfiguredFlashMethod()).toUpperCase()} Flash OK: ${result.artifactPath}`);
-      });
-    }),
-  );
-
-  const runCustomCommand = async () => {
-    const config = vscode.workspace.getConfiguration('serialagent');
-    return customCommandService.run(
-      readCustomCommandConfig((key, defaultValue) => config.get(key, defaultValue) as typeof defaultValue),
-      createFileSystemHost({
-        workspaceRoot: vscode.workspace.workspaceFolders?.[0]?.uri.fsPath,
-        isTrusted: vscode.workspace.isTrusted,
-      }),
-    );
-  };
-
-  context.subscriptions.push(
-    vscode.commands.registerCommand('serialagent.custom.run', async () => {
-      await expandMonitorIfEnabled();
-      await runKeilTaskUi('Custom Command', async () => {
-        const result = await runCustomCommand();
-        vscode.window.showInformationMessage(`[Serial Agent Plus] Custom OK: ${result.preview}`);
-      });
-    }),
-  );
-
-  context.subscriptions.push(
-    vscode.commands.registerCommand('serialagent.keil.runF7Action', async () => {
-      try {
-        const action = vscode.workspace.getConfiguration('serialagent').get<string>('keil.f7Action', 'build');
-        const command = resolveKeilF7Command(action);
-        await vscode.commands.executeCommand(command);
-      } catch (err: unknown) {
-        const msg = err instanceof Error ? err.message : String(err);
-        vscode.window.showErrorMessage(`[Serial Agent Plus] F7 action failed: ${msg}`);
-      }
     }),
   );
 
@@ -503,9 +201,6 @@ export function activate(context: vscode.ExtensionContext) {
 
   context.subscriptions.push(
     vscode.workspace.onDidChangeConfiguration((event) => {
-      if (event.affectsConfiguration('serialagent')) {
-        void refreshFirmwareConfigState();
-      }
       if (
         event.affectsConfiguration('serialagent.portAutoRefresh')
         || event.affectsConfiguration('serialagent.portRefreshIntervalMs')
@@ -515,8 +210,6 @@ export function activate(context: vscode.ExtensionContext) {
       }
     }),
   );
-
-  void refreshFirmwareConfigState();
 }
 
 export async function deactivate(): Promise<void> {

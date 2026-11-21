@@ -6,7 +6,7 @@ English version: [README_EN.md](README_EN.md)
 
 `Serial Agent Plus Skill` 是给 AI 客户端或代理使用的工作流层。它的职责不是提供
 运行时能力，而是教 agent 如何正确使用 `Serial Agent Plus MCP` 暴露的工具，再通过本地
-Bridge 去使用 `Serial Agent Plus` VS Code 插件持有的串口与工具链能力。
+Bridge 去使用 `Serial Agent Plus` VS Code 插件持有的串口与日志能力。
 
 上游项目（原始项目）：
 
@@ -33,13 +33,12 @@ serialagent-plus
 
 ## 它适合做什么
 
-这个 skill 适合帮助 agent 判断并执行以下三类任务：
+这个 skill 适合帮助 agent 判断并执行以下两类任务：
 
 - 只读检查：查看连接状态、端口、日志、被动输出
 - 开环串口操作：设备已在运行，只通过串口做配置、命令交互或日志采集
-- 闭环固件验证：确实需要 build / flash / post-flash 验证时再进入闭环
 
-它不会把所有任务都默认成 build/flash 流程。很多场景只需要串口通信，不需要编译烧录。
+很多场景只需要串口通信。
 
 ## 它不负责什么
 
@@ -52,15 +51,14 @@ serialagent-plus
 推荐心智模型是：
 
 ```text
-AI Client -> MCP tools -> Local Bridge -> VS Code extension -> Serial / Toolchain
+AI Client -> MCP tools -> Local Bridge -> VS Code extension -> Serial
 ```
 
 ## 它重点教 agent 什么
 
 - 优先调用 MCP tools，而不是假设自己能直接访问 Bridge REST
-- 先判断任务是只读、开环还是闭环
+- 先判断任务是只读还是开环串口操作
 - 请求-响应类串口交互优先使用 `send_and_wait`
-- 需要 build/flash 时先做 `check_keil_config`
 - 结论必须基于工具返回和日志证据
 
 ## 安装位置

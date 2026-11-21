@@ -7,7 +7,7 @@
 The `Serial Agent Plus Skill` is the workflow layer for AI clients and agents. Its
 job is not to provide runtime capabilities by itself. Its job is to teach an
 agent how to use the tools exposed by `Serial Agent Plus MCP`, which then reach the
-local Bridge and the serial/toolchain state owned by the `Serial Agent Plus` VS Code
+local Bridge and the serial state owned by the `Serial Agent Plus` VS Code
 extension.
 
 Upstream project:
@@ -35,16 +35,12 @@ serialagent-plus
 
 ## What It Is For
 
-This skill helps an agent classify and execute three common task modes:
+This skill helps an agent classify and execute two common task modes:
 
 - read-only inspection: inspect status, ports, logs, or passive output
-- open-loop serial operation: interact with a running device over serial without
-  build or flash
-- closed-loop firmware verification: use build/flash only when the task really
-  requires firmware deployment and post-flash verification
+- open-loop serial operation: interact with a running device over serial
 
-It should not assume that every task is a build-and-flash workflow. Many tasks
-only need serial interaction.
+Many tasks only need serial interaction.
 
 ## What It Is Not
 
@@ -57,15 +53,14 @@ This skill does not:
 The intended mental model is:
 
 ```text
-AI Client -> MCP tools -> Local Bridge -> VS Code extension -> Serial / Toolchain
+AI Client -> MCP tools -> Local Bridge -> VS Code extension -> Serial
 ```
 
 ## What It Teaches The Agent
 
 - prefer MCP tools instead of assuming direct Bridge REST access
-- decide whether the task is read-only, open-loop, or closed-loop first
+- decide whether the task is read-only or open-loop serial work first
 - prefer `send_and_wait` for request-response serial work
-- run `check_keil_config` before build/flash actions
 - ground conclusions in tool output and log evidence
 
 ## Install Position

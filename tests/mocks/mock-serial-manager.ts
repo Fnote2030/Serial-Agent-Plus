@@ -234,6 +234,16 @@ export class MockSerialManager implements ISerialManager {
     for (const cb of this._newLogSubscribers) { cb(line); }
   }
 
+  /** 注入 TX 回显日志（与真实 SerialManager 行为一致：showTimestamp 开启时为每行添加时间戳前缀） */
+  injectTxLog(data: string): void {
+    const now = new Date();
+    const prefix = this._config.showTimestamp
+      ? `[${now.toTimeString().split(' ')[0]}.${String(now.getMilliseconds()).padStart(3, '0')}] `
+      : '';
+    const body = String(data).split('\n').map((line) => `${prefix}MCP TX>> ${line}`).join('\n');
+    this.injectLog(body);
+  }
+
   /** 订阅新日志行 */
   onNewLog(callback: (line: string) => void): void {
     this._newLogSubscribers.push(callback);

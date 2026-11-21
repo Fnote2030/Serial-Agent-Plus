@@ -14,13 +14,12 @@
   // @ts-ignore
   const vscode = acquireVsCodeApi();
 
+  // @ts-ignore -- 由 media/terminal-device-line.js 提供（在本脚本之前加载）
+  const TerminalDeviceLine = globalThis.TerminalDeviceLine;
+
   const MAX_HISTORY = 20;
   const MAX_RENDER_ENTRIES = 5000;
   const DEFAULT_NORMAL_SEND_HEIGHT = 38;
-
-  /**
-   * @typedef {'firmware' | 'connection' | 'monitor'} AccordionPanel
-   */
 
   /**
    * @typedef {{ text: string; kind: 'text' | 'echo' }} LogEntry
@@ -34,6 +33,9 @@
   const statusText = document.getElementById('status-text');
   const monitorPortChip = document.getElementById('monitor-port-chip');
   const monitorBaudChip = document.getElementById('monitor-baud-chip');
+  const monitorParityChip = document.getElementById('monitor-parity-chip');
+
+  const PARITY_LABELS = { none: 'None', even: 'Even', odd: 'Odd', mark: 'Mark', space: 'Space' };
   const rxCountEl = document.getElementById('rx-count');
   const txCountEl = document.getElementById('tx-count');
   const monitorConnectBtn = document.getElementById('btn-monitor-connect');
@@ -44,6 +46,8 @@
   const portSelect = /** @type {HTMLSelectElement} */ (document.getElementById('port-select'));
   /** @type {HTMLInputElement | null} */
   const baudrateInput = /** @type {HTMLInputElement} */ (document.getElementById('baudrate-input'));
+  /** @type {HTMLSelectElement | null} */
+  const baudratePresetSelect = /** @type {HTMLSelectElement} */ (document.getElementById('baudrate-preset-select'));
   /** @type {HTMLSelectElement | null} */
   const databitsSelect = /** @type {HTMLSelectElement} */ (document.getElementById('databits-select'));
   /** @type {HTMLSelectElement | null} */
@@ -58,29 +62,11 @@
   const encodingSelect = /** @type {HTMLSelectElement} */ (document.getElementById('encoding-select'));
 
   const refreshBtn = document.getElementById('btn-refresh');
-  const connectBtn = document.getElementById('btn-connect');
   const clearBtn = document.getElementById('btn-clear');
-  const keilBuildBtn = document.getElementById('btn-keil-build');
-  const keilFlashBtn = document.getElementById('btn-keil-flash');
-  const keilBuildFlashBtn = document.getElementById('btn-keil-build-flash');
-  const customRunBtn = document.getElementById('btn-custom-run');
-  const keilConfigInlineBtn = document.getElementById('btn-keil-config-inline');
-  const keilCheckBtn = document.getElementById('btn-keil-check');
-  const keilSettingsBtn = document.getElementById('btn-keil-settings');
-  const keilStatusEl = document.getElementById('keil-status');
-  const firmwareSummaryStatusEl = document.getElementById('firmware-summary-status');
-  const firmwareSummaryBuildEl = document.getElementById('firmware-summary-build');
-  const firmwareSummaryFlashEl = document.getElementById('firmware-summary-flash');
-  const firmwareSummaryCustomEl = document.getElementById('firmware-summary-custom');
-  const firmwareSummaryHintEl = document.getElementById('firmware-summary-hint');
-  const firmwareSummaryWarningsEl = document.getElementById('firmware-summary-warnings');
-  const firmwareConfigDrawer = document.getElementById('firmware-config-drawer');
-  const firmwareDrawerTitleEl = document.getElementById('firmware-drawer-route-title');
-  const firmwareDrawerBackBtn = document.getElementById('btn-firmware-drawer-back');
-  const firmwareDrawerCloseBtn = document.getElementById('btn-firmware-drawer-close');
-  const firmwareRouteViews = Array.from(document.querySelectorAll('.firmware-config-route'));
-  const firmwareRouteButtons = Array.from(document.querySelectorAll('[data-firmware-route]'));
-  const firmwareActionButtons = Array.from(document.querySelectorAll('[data-firmware-action]'));
+  const configDrawer = document.getElementById('serial-config-drawer');
+  const configToggleBtn = document.getElementById('btn-config-toggle');
+  const optPeriodicSend = document.getElementById('opt-periodic-send');
+  const periodicIntervalInput = document.getElementById('periodic-interval-input');
 
   /** @type {HTMLInputElement | null} */
   const optTimestamp = /** @type {HTMLInputElement} */ (document.getElementById('opt-timestamp'));
@@ -132,20 +118,60 @@
   let frozenLog = false;
   let logEntries = /** @type {LogEntry[]} */ ([]);
   let activeLogFilter = '';
-  /** @type {AccordionPanel | null} */
-  let activePanel = 'monitor';
   let normalSendHeight;
-  let firmwareDrawerOpen = false;
-  let firmwareDrawerRoute = 'home';
-  let firmwareDrawerStack = ['home'];
-  let firmwareConfigSnapshot = null;
-  let keilBusy = false;
+  let periodicTimer = null;
+  let pendingSendAfterConnect = false;
+  let pendingTerminalLine = null;
+  let terminalBuffer = '';
+  let terminalCaret = 0;
+  // 设备 shell 编辑缓冲当前持有的行（↑/↓ 历史或 Tab 补全 redraw 同步后非空，null 表示为空）。
+  // Enter/Tab 发送前按它对齐，避免整行重发被设备追加成 "lsls"。
+  let terminalDeviceLine = /** @type {string | null} */ (null);
+  const rxSim = TerminalDeviceLine.createRxLineSimulator();
+  const rxLine = rxSim.line;
+  let tabSync = { active: false, sent: '' };
+  let terminalHistory = [];
+  let historySync = false;
+  let historyRestore = null; // ↑/↓ 后等待 redraw 的快照；设备在历史边界不再重绘，超时恢复
+  let historyRestoreTimer = null;
+  const syncTimers = { tab: null, history: null };
+
+  function cancelHistoryRestore() {
+    if (historyRestoreTimer) { clearTimeout(historyRestoreTimer); historyRestoreTimer = null; }
+    historyRestore = null;
+  }
+
+  // msh 在最旧历史条目再按 ↑ 时不再重绘（设备编辑行保持原内容，本地已清空）：
+  // 200ms 内没有 redraw 同步则恢复按键前的本地输入行与设备行状态
+  function restorePendingHistoryLine() {
+    historyRestoreTimer = null;
+    if (!historyRestore) { return; }
+    terminalBuffer = historyRestore.buffer;
+    terminalCaret = historyRestore.caret;
+    terminalDeviceLine = historyRestore.deviceLine;
+    historyRestore = null;
+    renderLogArea();
+  }
+
+  // 同步去激活采用防抖：设备回显/redraw 分片多次到达，最后一次匹配后 200ms 才失效，
+  // 避免回显分片触发过早同步后、redraw 分片再也无法修正。
+  function scheduleSyncDeactivate(kind) {
+    if (syncTimers[kind]) { clearTimeout(syncTimers[kind]); }
+    syncTimers[kind] = setTimeout(() => {
+      if (kind === 'tab') { tabSync.active = false; } else { historySync = false; }
+      syncTimers[kind] = null;
+    }, 200);
+  }
+
+  function clearSyncTimers() {
+    if (syncTimers.tab) { clearTimeout(syncTimers.tab); syncTimers.tab = null; }
+    if (syncTimers.history) { clearTimeout(syncTimers.history); syncTimers.history = null; }
+    cancelHistoryRestore();
+  }
 
   restoreWebviewState();
 
   bindSerialActions();
-  bindAccordionActions();
-  bindFirmwareDrawerActions();
   bindLogActions();
   bindSendActions();
   bindQuickCommandActions();
@@ -192,34 +218,153 @@
       vscode.postMessage({ type: 'refreshPorts' });
     });
 
-    connectBtn?.addEventListener('click', handleConnectionToggle);
     monitorConnectBtn?.addEventListener('click', handleConnectionToggle);
 
-    keilBuildBtn?.addEventListener('click', () => {
-      vscode.postMessage({ type: 'keilBuild' });
+    configToggleBtn?.addEventListener('click', () => {
+      const collapsed = configDrawer?.classList.toggle('hidden');
+      if (configToggleBtn) {
+        configToggleBtn.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
+      }
     });
-    keilFlashBtn?.addEventListener('click', () => {
-      vscode.postMessage({ type: 'keilFlash' });
-    });
-    keilBuildFlashBtn?.addEventListener('click', () => {
-      vscode.postMessage({ type: 'keilBuildFlash' });
-    });
-    customRunBtn?.addEventListener('click', () => {
-      const custom = firmwareConfigSnapshot?.custom || {};
-      if (!custom.ready) {
-        openFirmwareDrawer('custom');
+
+    logArea?.addEventListener('keydown', (event) => {
+      const key = event.key;
+      if (event.ctrlKey && !event.altKey && !event.metaKey && (key === 'c' || key === 'C')) {
+        event.preventDefault();
+        terminalBuffer = '';
+        terminalCaret = 0;
+        terminalDeviceLine = null; // 设备收到 ^C 会丢弃编辑行
+        cancelHistoryRestore();
+        renderLogArea();
+        sendTerminalBytes('\x03');
         return;
       }
-      vscode.postMessage({ type: 'customRun' });
+      if (event.ctrlKey || event.metaKey || event.altKey) {
+        return;
+      }
+
+      if (key === 'Enter') {
+        event.preventDefault();
+        handleTerminalEnter();
+        return;
+      }
+
+      if (key === 'Tab') {
+        event.preventDefault();
+        handleTerminalTab();
+        return;
+      }
+
+      if (key === 'Backspace') {
+        event.preventDefault();
+        terminalBackspace();
+        return;
+      }
+
+      if (key === 'Delete') {
+        event.preventDefault();
+        terminalDelete();
+        return;
+      }
+
+      if (key === 'ArrowLeft') {
+        event.preventDefault();
+        terminalMoveCaret(-1);
+        return;
+      }
+
+      if (key === 'ArrowRight') {
+        event.preventDefault();
+        terminalMoveCaret(1);
+        return;
+      }
+
+      if (key === 'Home') {
+        event.preventDefault();
+        terminalMoveCaretTo(0);
+        return;
+      }
+
+      if (key === 'End') {
+        event.preventDefault();
+        terminalMoveCaretTo(terminalBuffer.length);
+        return;
+      }
+
+      // ??????????
+      const passthrough = terminalPassthroughBytes(key);
+      if (passthrough !== null) {
+        event.preventDefault();
+        if (key === 'ArrowUp' || key === 'ArrowDown') {
+          // 历史切换由设备 shell 接管：清空本地缓冲并等待 redraw 同步。
+          // 连续按键且尚无 redraw 时保留最初的快照（最后一次稳定状态）
+          if (!historyRestore) {
+            historyRestore = { buffer: terminalBuffer, caret: terminalCaret, deviceLine: terminalDeviceLine };
+          }
+          if (historyRestoreTimer) { clearTimeout(historyRestoreTimer); }
+          historyRestoreTimer = setTimeout(restorePendingHistoryLine, 200);
+          terminalBuffer = '';
+          terminalCaret = 0;
+          tabSync.active = false;
+          historySync = true;
+          terminalDeviceLine = null; // 设备即将用历史条目替换编辑行，redraw 同步后再更新
+          if (syncTimers.tab) { clearTimeout(syncTimers.tab); syncTimers.tab = null; }
+          if (syncTimers.history) { clearTimeout(syncTimers.history); syncTimers.history = null; }
+          renderLogArea();
+        } else if (key === 'Escape') {
+          terminalBuffer = '';
+          terminalCaret = 0;
+          renderLogArea();
+        }
+        sendTerminalBytes(passthrough);
+        return;
+      }
+
+      // ????????????????????
+      if (key.length === 1) {
+        event.preventDefault();
+        insertTerminalChar(key);
+        return;
+      }
     });
-    keilConfigInlineBtn?.addEventListener('click', () => {
-      openFirmwareDrawer('home');
+
+    logArea?.addEventListener('click', () => {
+      if (logArea instanceof HTMLElement) {
+        logArea.focus();
+      }
     });
-    keilCheckBtn?.addEventListener('click', () => {
-      vscode.postMessage({ type: 'keilRunConfigCheck' });
+
+    optPeriodicSend?.addEventListener('change', () => {
+      handlePeriodicSendToggle();
+      saveState();
     });
-    keilSettingsBtn?.addEventListener('click', () => {
-      vscode.postMessage({ type: 'keilOpenAdvancedSettings' });
+
+    periodicIntervalInput?.addEventListener('change', () => {
+      clampPeriodicInterval();
+      if (periodicTimer) {
+        stopPeriodicSend();
+        startPeriodicSend();
+      }
+    });
+
+    function applyBaudPreset(value) {
+      if (baudrateInput) {
+        baudrateInput.value = value;
+      }
+      if (baudratePresetSelect) {
+        baudratePresetSelect.value = value;
+      }
+      persistCurrentConfigDraft();
+      updateMonitorConfigChips();
+    }
+
+    baudratePresetSelect?.addEventListener('change', () => {
+      if (!baudratePresetSelect.value) {
+        baudrateInput?.focus();
+        baudrateInput?.select();
+        return;
+      }
+      applyBaudPreset(baudratePresetSelect.value);
     });
 
     optTimestamp?.addEventListener('change', () => {
@@ -244,99 +389,10 @@
       flowControlSelect,
     ].forEach((element) => {
       element?.addEventListener('change', () => {
+        syncBaudratePreset();
         persistCurrentConfigDraft();
         updateMonitorConfigChips();
       });
-    });
-  }
-
-  function bindAccordionActions() {
-    accordionHeaders.forEach((header) => {
-      header.addEventListener('click', () => {
-        const panelId = header.getAttribute('data-accordion');
-        if (panelId === 'firmware' || panelId === 'connection' || panelId === 'monitor') {
-          toggleAccordionPanel(panelId);
-        }
-      });
-      header.addEventListener('keydown', (event) => {
-        const panelId = header.getAttribute('data-accordion');
-        if (panelId !== 'firmware' && panelId !== 'connection' && panelId !== 'monitor') {
-          return;
-        }
-
-        if (event.key === 'Enter' || event.key === ' ') {
-          event.preventDefault();
-          header.click();
-          return;
-        }
-
-        if (event.key === 'ArrowRight' && activePanel !== panelId) {
-          event.preventDefault();
-          setActivePanel(panelId, { persist: true });
-          return;
-        }
-
-        if (event.key === 'ArrowLeft' && activePanel === panelId) {
-          event.preventDefault();
-          setActivePanel(null, { persist: true });
-        }
-      });
-    });
-  }
-
-  function toggleAccordionPanel(panel) {
-    const nextPanel = activePanel === panel ? null : panel;
-    setActivePanel(nextPanel, { persist: true });
-  }
-
-  /**
-   * @param {AccordionPanel | null} panel
-   * @param {{ persist?: boolean }} [options]
-   */
-  function setActivePanel(panel, options) {
-    const shouldCloseDrawer = panel !== 'firmware' && firmwareDrawerOpen;
-    if (shouldCloseDrawer) {
-      firmwareDrawerOpen = false;
-      firmwareDrawerRoute = 'home';
-      firmwareDrawerStack = ['home'];
-      renderFirmwareDrawer();
-    }
-
-    activePanel = panel;
-    renderAccordionPanels();
-
-    if (options?.persist !== false) {
-      if (shouldCloseDrawer) {
-        vscode.postMessage({
-          type: 'savePanelUiState',
-          activePanel: panel,
-          firmwareDrawerOpen: false,
-          firmwareDrawerRoute: 'home',
-          firmwareDrawerStack: ['home'],
-        });
-      } else {
-        vscode.postMessage({ type: 'savePanelUiState', activePanel: panel });
-      }
-    }
-  }
-
-  function renderAccordionPanels() {
-    accordionPanels.forEach((section) => {
-      const panel = section.getAttribute('data-panel');
-      const expanded = panel === activePanel;
-      section.classList.toggle('is-expanded', expanded);
-
-      const header = section.querySelector('.accordion-header');
-      const body = section.querySelector('.accordion-body');
-      const chevron = section.querySelector('.accordion-chevron');
-
-      if (header) {
-        header.setAttribute('aria-expanded', expanded ? 'true' : 'false');
-      }
-      body?.classList.toggle('hidden', !expanded);
-      if (chevron) {
-        chevron.classList.toggle('is-expanded', expanded);
-      }
     });
   }
 
@@ -344,6 +400,7 @@
     if (connected) {
       monitorPortChip?.classList.add('hidden');
       monitorBaudChip?.classList.add('hidden');
+      monitorParityChip?.classList.add('hidden');
       return;
     }
 
@@ -358,65 +415,14 @@
       }
     }
     if (monitorBaudChip) {
-      monitorBaudChip.textContent = `${baud} baud`;
+      monitorBaudChip.textContent = baud;
       monitorBaudChip.classList.toggle('hidden', !port);
     }
-  }
-
-  function bindFirmwareDrawerActions() {
-    firmwareDrawerBackBtn?.addEventListener('click', () => {
-      navigateFirmwareDrawerBack();
-    });
-
-    firmwareDrawerCloseBtn?.addEventListener('click', () => {
-      closeFirmwareDrawer(true);
-    });
-
-    firmwareRouteButtons.forEach((button) => {
-      button.addEventListener('click', () => {
-        if (keilBusy) {
-          return;
-        }
-
-        const action = button.getAttribute('data-firmware-action');
-        if (action) {
-          vscode.postMessage({
-            type: 'firmwareConfigAction',
-            action,
-            route: firmwareDrawerRoute,
-          });
-          return;
-        }
-
-        navigateFirmwareDrawer(button.getAttribute('data-firmware-route') || 'home');
-      });
-    });
-
-    firmwareActionButtons.forEach((button) => {
-      button.addEventListener('click', () => {
-        if (keilBusy) {
-          return;
-        }
-
-        const action = button.getAttribute('data-firmware-action');
-        if (!action) {
-          return;
-        }
-
-        vscode.postMessage({
-          type: 'firmwareConfigAction',
-          action,
-          route: firmwareDrawerRoute,
-        });
-      });
-    });
-
-    window.addEventListener('keydown', (event) => {
-      if (event.key === 'Escape' && firmwareDrawerOpen) {
-        event.preventDefault();
-        closeFirmwareDrawer(true);
-      }
-    });
+    if (monitorParityChip) {
+      const parity = paritySelect?.value || 'none';
+      monitorParityChip.textContent = PARITY_LABELS[parity] ?? PARITY_LABELS.none;
+      monitorParityChip.classList.toggle('hidden', !port);
+    }
   }
 
   function bindLogActions() {
@@ -632,11 +638,6 @@
   }
 
   function updateConnectionButtons() {
-    if (connectBtn) {
-      connectBtn.textContent = connected ? 'Close' : 'Open';
-      connectBtn.className = connected ? 'btn-danger' : 'btn-primary';
-    }
-
     if (monitorConnectBtn) {
       monitorConnectBtn.textContent = connected ? 'Close' : 'Open';
       monitorConnectBtn.classList.toggle('status-action-primary', !connected);
@@ -647,328 +648,245 @@
   }
 
   function applyUiState(uiState) {
-    activePanel = normalizeActivePanel(uiState?.activePanel);
     normalSendHeight = typeof uiState?.normalSendHeight === 'number'
       ? uiState.normalSendHeight
       : normalSendHeight;
-    firmwareDrawerOpen = !!uiState?.firmwareDrawerOpen;
-    if (firmwareDrawerOpen && activePanel !== 'firmware') {
-      firmwareDrawerOpen = false;
-    }
-    firmwareDrawerRoute = normalizeFirmwareDrawerRoute(uiState?.firmwareDrawerRoute);
-    firmwareDrawerStack = normalizeFirmwareDrawerStack(
-      uiState?.firmwareDrawerStack,
-      firmwareDrawerOpen ? firmwareDrawerRoute : 'home',
-      firmwareDrawerOpen,
-    );
 
-    renderAccordionPanels();
     updateConnectionButtons();
     applyCurrentLayout();
-    renderFirmwareDrawer();
   }
 
-  /**
-   * @param {unknown} panel
-   * @returns {AccordionPanel | null}
-   */
-  function normalizeActivePanel(panel) {
-    if (panel === 'firmware' || panel === 'connection' || panel === 'monitor') {
-      return panel;
+  // ???????????????
+  function terminalPassthroughBytes(key) {
+    switch (key) {
+      case 'Escape': return '\x1b';
+      case 'ArrowUp': return '\x1b[A';
+      case 'ArrowDown': return '\x1b[B';
+      case 'PageUp': return '\x1b[5~';
+      case 'PageDown': return '\x1b[6~';
     }
-    if (panel === null || panel === 'none' || panel === '') {
-      return null;
-    }
-    return 'monitor';
+    return null;
   }
 
-  function normalizeFirmwareDrawerRoute(route) {
-    switch (route) {
-      case 'build':
-      case 'flash':
-      case 'jlink':
-      case 'stlink':
-      case 'openocd':
-      case 'custom':
-        return route;
-      case 'home':
-      default:
-        return 'home';
+  function sendTerminalBytes(bytes) {
+    if (!connected) {
+      pendingTerminalLine = bytes;
+      const config = collectCurrentConfig();
+      vscode.postMessage({ type: 'connect', ...config });
+      vscode.postMessage({ type: 'saveConfig', config });
+      return;
     }
+    // Terminal manages its own line endings (already included in bytes).
+    vscode.postMessage({ type: 'sendData', text: bytes, hexSend: false, lineEnding: 'none' });
   }
 
-  function normalizeFirmwareDrawerStack(stack, fallbackRoute, open) {
-    if (!open) {
-      return ['home'];
-    }
-
-    const route = normalizeFirmwareDrawerRoute(fallbackRoute);
-    if (!Array.isArray(stack) || stack.length === 0) {
-      return route === 'home' ? ['home'] : ['home', route];
-    }
-
-    const normalized = stack
-      .map((item) => normalizeFirmwareDrawerRoute(item))
-      .filter((item, index, routes) => item !== routes[index - 1]);
-
-    if (normalized.length === 0) {
-      return route === 'home' ? ['home'] : ['home', route];
-    }
-
-    if (normalized[0] !== 'home') {
-      normalized.unshift('home');
-    }
-
-    if (normalized[normalized.length - 1] !== route) {
-      normalized.push(route);
-    }
-
-    return normalized;
+  function insertTerminalChar(ch) {
+    terminalBuffer = terminalBuffer.slice(0, terminalCaret) + ch + terminalBuffer.slice(terminalCaret);
+    terminalCaret += ch.length;
+    renderLogArea();
   }
 
-  function getFirmwareDrawerTitle(route) {
-    switch (route) {
-      case 'build':
-        return 'Build Essentials';
-      case 'flash':
-        return 'Flash Essentials';
-      case 'jlink':
-        return 'JLink';
-      case 'stlink':
-        return 'ST-Link';
-      case 'openocd':
-        return 'OpenOCD';
-      case 'custom':
-        return 'Custom Command';
-      case 'home':
-      default:
-        return 'Home';
+  function terminalBackspace() {
+    if (terminalCaret > 0) {
+      terminalBuffer = terminalBuffer.slice(0, terminalCaret - 1) + terminalBuffer.slice(terminalCaret);
+      terminalCaret -= 1;
+      renderLogArea();
     }
   }
 
-  function persistFirmwareDrawerState() {
-    vscode.postMessage({
-      type: 'savePanelUiState',
-      firmwareDrawerOpen,
-      firmwareDrawerRoute,
-      firmwareDrawerStack,
+  function terminalDelete() {
+    if (terminalCaret < terminalBuffer.length) {
+      terminalBuffer = terminalBuffer.slice(0, terminalCaret) + terminalBuffer.slice(terminalCaret + 1);
+      renderLogArea();
+    }
+  }
+
+  function terminalMoveCaret(delta) {
+    const next = terminalCaret + delta;
+    if (next >= 0 && next <= terminalBuffer.length) {
+      terminalCaret = next;
+      renderLogArea();
+    }
+  }
+
+  function terminalMoveCaretTo(position) {
+    const clamped = Math.max(0, Math.min(terminalBuffer.length, position));
+    if (clamped !== terminalCaret) {
+      terminalCaret = clamped;
+      renderLogArea();
+    }
+  }
+
+  // Tab = 本地输入行 + \t 原子发送；随后监听设备 redraw，把补全结果同步回本地输入行。
+  // 发送前按设备行对齐：设备已持有该行时只发 \t，本地改过则先退格清空设备行。
+  function handleTerminalTab() {
+    const line = terminalBuffer;
+    if (line) {
+      tabSync.active = true;
+      tabSync.sent = line;
+    }
+    historySync = false;
+    cancelHistoryRestore();
+    if (syncTimers.history) { clearTimeout(syncTimers.history); syncTimers.history = null; }
+    terminalBuffer = '';
+    terminalCaret = 0;
+    renderLogArea();
+    sendTerminalBytes(TerminalDeviceLine.reconcileBytes(terminalDeviceLine, line, '\t'));
+    // 发送后设备编辑行持有本地行，等补全 redraw 到达再由 tabSync 覆盖
+    terminalDeviceLine = line || null;
+  }
+
+  function pushTerminalHistory(line) {
+    if (terminalHistory[0] === line) {
+      return;
+    }
+    terminalHistory.unshift(line);
+    if (terminalHistory.length > 50) {
+      terminalHistory.pop();
+    }
+  }
+
+  function handleTerminalEnter() {
+    const line = terminalBuffer;
+    terminalBuffer = '';
+    terminalCaret = 0;
+    tabSync.active = false;
+    historySync = false;
+    clearSyncTimers();
+    renderLogArea();
+    if (line.trim()) {
+      pushTerminalHistory(line);
+    }
+    // 终端回车固定发送 CR（串口 shell 惯例，不受发送框 End 设置影响）。
+    // 设备行已同步（↑/↓ 历史、Tab 补全 redraw）时不再整行重发，否则设备会把
+    // 整行追加到自己的编辑缓冲，出现 "ls" -> "lsls" -> "lslsls"；本地改过则先清空设备行。
+    sendTerminalBytes(TerminalDeviceLine.reconcileBytes(terminalDeviceLine, line, '\r'));
+    terminalDeviceLine = null;
+  }
+
+  // RX 行模拟器：设备回显/重绘中的控制字符与 CSI 序列由共享模块的模拟器按语义解释
+  // （\b/\r/\n、ESC[2K 整行擦除、ESC[K 行尾擦除、ESC[nD/C 光标移动等），
+  // 详见 media/terminal-device-line.js。
+  function feedRx(raw) {
+    for (const text of rxSim.feed(raw)) {
+      // Timestamp 选项由 webview 在显示行提交时统一加前缀；
+      // manager 侧的时间戳只进日志缓冲/MCP 通道，不再混入数据流
+      appendLogEntry(optTimestamp?.checked ? `${formatLogTimestamp()} ${text}` : text, 'text');
+    }
+
+    // Tab 补全同步：设备 redraw 行包含发送前的缓冲时，把补全后的完整行同步回本地输入行
+    if (tabSync.active && rxLine.text.includes(tabSync.sent)) {
+      terminalBuffer = rxLine.text.slice(rxLine.text.indexOf(tabSync.sent));
+      terminalCaret = terminalBuffer.length;
+      terminalDeviceLine = terminalBuffer; // 设备编辑缓冲此刻持有补全后的整行
+      scheduleSyncDeactivate('tab');
+      renderLogArea();
+    }
+
+    // 上下键历史同步：设备 redraw 行以历史命令结尾时（最长匹配），同步回本地输入行
+    if (historySync) {
+      let best = null;
+      for (const cmd of terminalHistory) {
+        if (cmd && rxLine.text.endsWith(cmd) && (best === null || cmd.length > best.length)) {
+          best = cmd;
+        }
+      }
+      if (best !== null) {
+        cancelHistoryRestore(); // redraw 已确认，不需要边界恢复
+        terminalBuffer = best;
+        terminalCaret = best.length;
+        terminalDeviceLine = best; // 设备编辑缓冲此刻持有召回的历史行
+        scheduleSyncDeactivate('history');
+        renderLogArea();
+      }
+    }
+
+    renderLogArea();
+    if (optAutoScroll?.checked && !frozenLog) {
+      scrollLogToBottom();
+    }
+  }
+
+  function unescapeSendText(text) {
+    return String(text).replace(/\\(x[0-9a-fA-F]{2}|r|n|t|0|\\)/g, (match, seq) => {
+      if (seq.charAt(0) === 'x' || seq.charAt(0) === 'X') {
+        return String.fromCharCode(parseInt(seq.slice(1), 16));
+      }
+      switch (seq) {
+        case 'r': return '\r';
+        case 'n': return '\n';
+        case 't': return '\t';
+        case '0': return '\x00';
+      }
+      return match;
     });
   }
 
-  function renderFirmwareDrawer() {
-    const open = firmwareDrawerOpen;
-    document.body.classList.toggle('firmware-config-open', open);
-    firmwareConfigDrawer?.classList.toggle('hidden', !open);
-
-    if (firmwareDrawerTitleEl) {
-      firmwareDrawerTitleEl.textContent = getFirmwareDrawerTitle(firmwareDrawerRoute);
+  function clampPeriodicInterval() {
+    if (!periodicIntervalInput) {
+      return;
     }
-
-    firmwareRouteViews.forEach((view) => {
-      const route = view.id.replace('firmware-route-', '');
-      view.classList.toggle('hidden', route !== firmwareDrawerRoute);
-    });
-
-    firmwareRouteButtons.forEach((button) => {
-      const isActive = button.getAttribute('data-firmware-route') === firmwareDrawerRoute;
-      button.classList.toggle('is-active', isActive);
-      button.setAttribute('aria-current', isActive ? 'page' : 'false');
-    });
-
-    if (firmwareDrawerBackBtn) {
-      firmwareDrawerBackBtn.disabled = !open || firmwareDrawerStack.length <= 1;
-    }
-
-    updateFirmwareActionButtons();
+    const value = parseInt(periodicIntervalInput.value, 10);
+    const clamped = Number.isFinite(value) ? Math.max(10, value) : 1000;
+    periodicIntervalInput.value = String(clamped);
   }
 
-  function updateFirmwareActionButtons() {
-    firmwareActionButtons.forEach((button) => {
-      const lockOnBusy = button.getAttribute('data-keil-busy-lock') === 'true';
-      button.disabled = lockOnBusy ? keilBusy : false;
-    });
+  function handlePeriodicSendToggle() {
+    if (!optPeriodicSend) {
+      return;
+    }
+    if (optPeriodicSend.checked) {
+      if (!connected) {
+        optPeriodicSend.checked = false;
+        return;
+      }
+      clampPeriodicInterval();
+      startPeriodicSend();
+    } else {
+      stopPeriodicSend();
+    }
+  }
+
+  function startPeriodicSend() {
+    if (periodicTimer) {
+      return;
+    }
+    const interval = Math.max(10, parseInt(periodicIntervalInput?.value || '1000', 10) || 1000);
+    periodicTimer = setInterval(() => {
+      if (connected) {
+        doSend(false);
+      }
+    }, interval);
+  }
+
+  function stopPeriodicSend() {
+    if (periodicTimer) {
+      clearInterval(periodicTimer);
+      periodicTimer = null;
+    }
   }
 
   function updateSendControlsDisabled() {
-    const blocked = !connected || keilBusy;
-    if (sendInput) {
-      sendInput.disabled = blocked;
-    }
-    if (sendBtn) {
-      sendBtn.disabled = blocked;
-    }
     quickCommandList?.querySelectorAll('.quick-command-chip').forEach((button) => {
       if (button instanceof HTMLButtonElement) {
-        button.disabled = blocked;
+        button.disabled = !connected;
       }
     });
   }
 
-  function setFirmwareDrawerState(nextOpen, nextRoute, nextStack, options) {
-    const route = normalizeFirmwareDrawerRoute(nextRoute);
-    const open = !!nextOpen;
-    firmwareDrawerOpen = open;
-    firmwareDrawerRoute = open ? route : 'home';
-    firmwareDrawerStack = normalizeFirmwareDrawerStack(
-      nextStack,
-      open ? route : 'home',
-      open,
-    );
-    renderFirmwareDrawer();
-    if (options?.persist !== false) {
-      persistFirmwareDrawerState();
-    }
-    if (options?.focusLog) {
-      focusLogArea();
-    }
+  function formatLogTimestamp() {
+    const now = new Date();
+    return `[${now.toTimeString().split(' ')[0]}.${String(now.getMilliseconds()).padStart(3, '0')}]`;
   }
 
-  function openFirmwareDrawer(route) {
-    setActivePanel('firmware', { persist: true });
-    const targetRoute = normalizeFirmwareDrawerRoute(route);
-    const nextStack = targetRoute === 'home' ? ['home'] : ['home', targetRoute];
-    setFirmwareDrawerState(true, targetRoute, nextStack, { persist: true });
-  }
-
-  function navigateFirmwareDrawer(route) {
-    const targetRoute = normalizeFirmwareDrawerRoute(route);
-    if (!firmwareDrawerOpen) {
-      openFirmwareDrawer(targetRoute);
+  function syncBaudratePreset() {
+    if (!baudratePresetSelect) {
       return;
     }
-
-    if (targetRoute === 'home') {
-      setFirmwareDrawerState(true, 'home', ['home'], { persist: true });
-      return;
-    }
-
-    const currentStack = firmwareDrawerStack.slice();
-    if (currentStack[currentStack.length - 1] === targetRoute) {
-      return;
-    }
-
-    currentStack.push(targetRoute);
-    setFirmwareDrawerState(true, targetRoute, currentStack, { persist: true });
-  }
-
-  function navigateFirmwareDrawerBack() {
-    if (!firmwareDrawerOpen || firmwareDrawerStack.length <= 1) {
-      return;
-    }
-
-    const nextStack = firmwareDrawerStack.slice(0, -1);
-    const nextRoute = nextStack[nextStack.length - 1] || 'home';
-    setFirmwareDrawerState(true, nextRoute, nextStack, { persist: true });
-  }
-
-  function closeFirmwareDrawer(focusLog) {
-    setFirmwareDrawerState(false, 'home', ['home'], {
-      persist: true,
-      focusLog: !!focusLog,
-    });
-  }
-
-  function focusLogArea() {
-    if (!(logArea instanceof HTMLElement)) {
-      return;
-    }
-
-    try {
-      logArea.focus({ preventScroll: true });
-    } catch {
-      logArea.focus();
-    }
-  }
-
-  function formatFirmwarePath(value, emptyText) {
-    if (!value) {
-      return emptyText;
-    }
-    return String(value);
-  }
-
-  function setFirmwareValue(id, text) {
-    const element = document.getElementById(id);
-    if (element) {
-      element.textContent = text;
-    }
-  }
-
-  function renderFirmwareSnapshot(snapshot) {
-    firmwareConfigSnapshot = snapshot || null;
-    if (!firmwareConfigSnapshot) {
-      return;
-    }
-
-    const keil = firmwareConfigSnapshot.keil || {};
-    const flash = firmwareConfigSnapshot.flash || {};
-    const jlink = flash.jlink || {};
-    const stlink = flash.stlink || {};
-    const openocd = flash.openocd || {};
-
-    setFirmwareValue('fw-build-uv4', formatFirmwarePath(keil.uv4Path, 'Choose Keil MDK-ARM UV4.exe'));
-    setFirmwareValue('fw-build-armcc5', formatFirmwarePath(keil.armcc5Path, 'Optional ARMCC5 bin directory'));
-    setFirmwareValue('fw-build-project', formatFirmwarePath(keil.projectFile, 'Choose .uvprojx / .uvproj directly, or scan a folder'));
-    setFirmwareValue('fw-build-target', keil.target || 'Optional: Auto uses the first target in the project');
-
-    setFirmwareValue(
-      'fw-flash-f7',
-      keil.f7Action === 'buildAndFlash'
-        ? 'Build+Flash'
-        : (keil.f7Action === 'custom' ? 'Custom' : (keil.f7Action === 'flash' ? 'Flash' : 'Build')),
-    );
-
-    const custom = firmwareConfigSnapshot.custom || {};
-    const customMode = custom.mode === 'command' ? 'command' : 'python';
-    setFirmwareValue('fw-custom-mode', customMode === 'command' ? 'Command' : 'Python Script');
-    setFirmwareValue('fw-custom-python', formatFirmwarePath(custom.pythonPath, 'Choose python.exe from a uv venv, venv, or system Python'));
-    setFirmwareValue('fw-custom-script', formatFirmwarePath(custom.script, 'Choose a .py script'));
-    setFirmwareValue('fw-custom-command', custom.command || 'Paste a command line, or choose an executable');
-    setFirmwareValue('fw-custom-preview', custom.preview || (customMode === 'command' ? 'Enter a command or choose an executable to preview it' : 'Choose Python and a script to preview the command'));
-    document.querySelectorAll('.custom-python-only').forEach((element) => {
-      element.classList.toggle('hidden', customMode !== 'python');
-    });
-    document.querySelectorAll('.custom-command-only').forEach((element) => {
-      element.classList.toggle('hidden', customMode !== 'command');
-    });
-    if (customRunBtn) {
-      customRunBtn.disabled = keilBusy;
-      customRunBtn.title = custom.ready
-        ? (custom.preview || 'Run custom command')
-        : 'Configure Custom Command first';
-    }
-    setFirmwareValue('fw-flash-method', getFirmwareMethodLabel(flash.method));
-
-    setFirmwareValue('fw-jlink-install', formatFirmwarePath(jlink.installDirectory, 'Choose JLink install directory'));
-    setFirmwareValue('fw-jlink-device', jlink.device || 'Select JLink CPU');
-    setFirmwareValue('fw-jlink-interface', jlink.interface || 'SWD');
-    setFirmwareValue('fw-jlink-speed', jlink.speed ? `${jlink.speed} kHz` : 'Choose JLink speed');
-    setFirmwareValue('fw-jlink-base', jlink.baseAddr || '0x08000000');
-
-    setFirmwareValue('fw-stlink-exe', formatFirmwarePath(stlink.exePath, 'Choose STM32_Programmer_CLI.exe'));
-    setFirmwareValue('fw-stlink-interface', stlink.interface || 'SWD');
-    setFirmwareValue('fw-stlink-speed', stlink.speed ? `${stlink.speed} kHz` : 'Choose ST-Link speed');
-    setFirmwareValue('fw-stlink-base', stlink.baseAddr || '0x08000000');
-    setFirmwareValue('fw-stlink-reset', stlink.resetMode || 'default');
-    setFirmwareValue('fw-stlink-run-after', stlink.runAfterProgram ? 'Yes' : 'No');
-
-    setFirmwareValue('fw-openocd-exe', formatFirmwarePath(openocd.exePath, 'Choose openocd.exe'));
-    setFirmwareValue('fw-openocd-target', openocd.target ? `${openocd.target}.cfg` : 'Choose target short name (.cfg)');
-    setFirmwareValue('fw-openocd-interface', openocd.interface ? `${openocd.interface}.cfg` : 'Choose interface short name (.cfg)');
-    setFirmwareValue('fw-openocd-sequence', openocd.sequence || 'helper');
-    setFirmwareValue('fw-openocd-base', openocd.baseAddr || '0x08000000');
-    setFirmwareValue('fw-openocd-run-after', openocd.runAfterProgram ? 'Yes' : 'No');
-  }
-
-  function getFirmwareMethodLabel(method) {
-    switch (method) {
-      case 'stlink':
-        return 'ST-Link';
-      case 'openocd':
-        return 'OpenOCD';
-      default:
-        return 'JLink';
-    }
+    const baud = baudrateInput?.value || '';
+    baudratePresetSelect.value = Array.from(baudratePresetSelect.options).some((option) => option.value === baud)
+      ? baud
+      : '';
   }
 
   function collectCurrentConfig() {
@@ -1000,6 +918,7 @@
     if (optTimestamp) { optTimestamp.checked = !!config.showTimestamp; }
     if (optHex) { optHex.checked = !!config.hexMode; }
     if (encodingSelect) { encodingSelect.value = config.encoding === 'gbk' ? 'gbk' : 'utf8'; }
+    syncBaudratePreset();
     updateMonitorConfigChips();
   }
 
@@ -1036,7 +955,7 @@
       button.addEventListener('click', () => {
         sendData(command.value, !!command.hexSend);
       });
-      button.disabled = !connected || keilBusy;
+      button.disabled = !connected;
       quickCommandList.appendChild(button);
     });
     updateSendControlsDisabled();
@@ -1108,23 +1027,36 @@
       : 'Send data... (Ctrl+Enter to send)';
   }
 
-  function doSend() {
+  function doSend(selectAfterSend = true) {
     const text = sendInput?.value || '';
     if (!text.trim()) {
       return;
     }
+    if (!connected) {
+      pendingSendAfterConnect = true;
+      const config = collectCurrentConfig();
+      vscode.postMessage({ type: 'connect', ...config });
+      vscode.postMessage({ type: 'saveConfig', config });
+      return;
+    }
     sendData(text, !!optHexSend?.checked);
-    sendInput?.select();
+    if (selectAfterSend) {
+      sendInput?.select();
+    }
   }
 
   function sendData(text, hexSend) {
     if (!connected) {
       return;
     }
-    vscode.postMessage({ type: 'sendData', text, hexSend });
+    const payload = hexSend ? text : unescapeSendText(text);
+    vscode.postMessage({ type: 'sendData', text: payload, hexSend });
 
     if (optEcho?.checked) {
-      appendLogEntry(`TX>> ${text}`, 'echo');
+      const body = optTimestamp?.checked
+        ? payload.split('\n').map((line) => `${formatLogTimestamp()} ${line}`).join('\n')
+        : payload;
+      appendLogEntry(`TX>> ${body}`, 'echo');
     }
 
     const historyIndex = sendHistory.indexOf(text);
@@ -1216,6 +1148,26 @@
       logArea.appendChild(line);
     });
 
+    // 终端输入行与设备实时行合并为同一行：本地输入直接接在设备提示符后
+    // （如 "msh > ls▌"）；历史/Tab 同步后设备行已包含命令，只在剩余部分上
+    // 叠加输入与光标，避免出现两条内容不一致的行。设备实时行为空时回退 "> " 前缀
+    const before = terminalBuffer.slice(0, terminalCaret);
+    const after = terminalBuffer.slice(terminalCaret);
+    const caretText = `${before}\u258c${after}`;
+    const liveDiv = document.createElement('div');
+    liveDiv.className = 'log-line rx-live-line';
+    if (!rxLine.text) {
+      liveDiv.textContent = `> ${caretText}`;
+    } else if (terminalDeviceLine !== null && rxLine.text.endsWith(terminalDeviceLine)) {
+      liveDiv.textContent = rxLine.text.slice(0, -terminalDeviceLine.length) + caretText;
+    } else if (terminalDeviceLine !== null) {
+      // 同步态但实时行与同步命令不匹配（罕见分片）：信任设备行，光标置于行尾
+      liveDiv.textContent = `${rxLine.text}\u258c`;
+    } else {
+      liveDiv.textContent = rxLine.text + caretText;
+    }
+    logArea.appendChild(liveDiv);
+
     updateEmptyState();
     if (optAutoScroll?.checked && !frozenLog) {
       scrollLogToBottom();
@@ -1237,24 +1189,7 @@
     if (!logEmptyState) {
       return;
     }
-
-    const hasEntries = getVisibleEntries().length > 0;
-    logEmptyState.classList.toggle('hidden', hasEntries);
-    if (hasEntries) {
-      return;
-    }
-
-    if (activeLogFilter) {
-      logEmptyState.textContent = 'Waiting RX data...';
-      return;
-    }
-
-    if (connected) {
-      logEmptyState.textContent = 'Waiting RX data...';
-      return;
-    }
-
-    logEmptyState.textContent = 'Waiting RX data...';
+    logEmptyState.classList.add('hidden');
   }
 
   function updateFreezeButton() {
@@ -1277,41 +1212,6 @@
     if (bytes < 1024) { return bytes + ' B'; }
     if (bytes < 1048576) { return (bytes / 1024).toFixed(1) + ' KB'; }
     return (bytes / 1048576).toFixed(1) + ' MB';
-  }
-
-  function renderFirmwareSummary(summary) {
-    if (!summary) {
-      return;
-    }
-
-    if (firmwareSummaryStatusEl) {
-      firmwareSummaryStatusEl.textContent = summary.statusText || 'Build/Flash summary unavailable';
-      firmwareSummaryStatusEl.classList.toggle('is-ready', !!summary.ready);
-      firmwareSummaryStatusEl.classList.toggle('is-warning', !summary.ready);
-    }
-    if (firmwareSummaryBuildEl) {
-      firmwareSummaryBuildEl.textContent = summary.buildText || 'Build: waiting for summary...';
-    }
-    if (firmwareSummaryFlashEl) {
-      firmwareSummaryFlashEl.textContent = summary.flashText || 'Flash: waiting for summary...';
-    }
-    if (firmwareSummaryCustomEl) {
-      firmwareSummaryCustomEl.textContent = summary.customText || 'Custom: waiting for summary...';
-    }
-    if (firmwareSummaryHintEl) {
-      firmwareSummaryHintEl.textContent = summary.hintText || 'Use Configure to start the guided setup.';
-    }
-    if (firmwareSummaryWarningsEl) {
-      const warnings = Array.isArray(summary.warnings) ? summary.warnings : [];
-      firmwareSummaryWarningsEl.innerHTML = '';
-      firmwareSummaryWarningsEl.classList.toggle('hidden', warnings.length === 0);
-      warnings.forEach((item) => {
-        const line = document.createElement('div');
-        line.className = 'firmware-summary-warning';
-        line.textContent = item;
-        firmwareSummaryWarningsEl.appendChild(line);
-      });
-    }
   }
 
   function formatPortLabel(port) {
@@ -1382,36 +1282,69 @@
         }
         if (statusText) {
           statusText.textContent = connected
-            ? `${message.port} @ ${message.baudRate}`
+            ? `${message.port} @ ${message.baudRate} ${PARITY_LABELS[message.parity] ?? PARITY_LABELS.none}`
             : 'Disconnected';
         }
         updateConnectionButtons();
 
-        [portSelect, baudrateInput, databitsSelect, paritySelect, stopbitsSelect, flowControlSelect].forEach((element) => {
+        [portSelect, baudratePresetSelect, baudrateInput, databitsSelect, paritySelect, stopbitsSelect, flowControlSelect].forEach((element) => {
           if (element) { element.disabled = connected; }
         });
-        if (sendInput) { sendInput.disabled = !connected || keilBusy; }
-        if (sendBtn) { sendBtn.disabled = !connected || keilBusy; }
+        if (!connected) {
+          pendingSendAfterConnect = false;
+          pendingTerminalLine = null;
+          tabSync.active = false;
+          historySync = false;
+          terminalDeviceLine = null; // 断开后设备编辑行状态未知，按为空处理
+          clearSyncTimers();
+          stopPeriodicSend();
+          if (optPeriodicSend) { optPeriodicSend.checked = false; }
+        }
+        if (connected && pendingSendAfterConnect) {
+          pendingSendAfterConnect = false;
+          doSend();
+        }
+        if (!connected) {
+          pendingTerminalLine = null;
+        }
+        if (connected && pendingTerminalLine !== null) {
+          const bytes = pendingTerminalLine;
+          pendingTerminalLine = null;
+          vscode.postMessage({ type: 'sendData', text: bytes, hexSend: false });
+        }
         updateSendControlsDisabled();
         updateEmptyState();
         break;
       }
 
       case 'appendLog': {
-        if (message.text && message.text.startsWith('MCP TX>> ')) {
-          appendLogEntry(message.text.trimEnd(), 'echo');
+        const raw = String(message.text || '');
+        // ANSI clear screen (device response to commands like `clear`)
+        if (/\u001b\[2J/.test(raw)) {
+          logEntries = [];
+          rxSim.reset();
+        }
+        // 只剥 OSC（窗口标题等）；CSI 序列保留给行模拟器按语义应用——
+        // 若像之前一样全部剥掉，msh 历史切换的 ESC[2K 会被丢弃，redraw 覆盖后
+        // 日志行残留旧命令尾巴（"help" 切 "ls" 显示成 "lsls"残迹/"lslp"）
+        const cleaned = raw.replace(/\u001b\][^\u0007]*(\u0007|\u001b\\)/g, '');
+        if (cleaned.includes('MCP TX>> ')) {
+          appendLogEntry(cleaned.replace(/\u001b\[[0-9;?]*[A-Za-z]/g, '').trimEnd(), 'echo');
         } else {
-          const chunks = String(message.text || '')
-            .split('\n')
-            .map((line) => line.trimEnd())
-            .filter((line) => line.length > 0);
-          chunks.forEach((line) => appendLogEntry(line, 'text'));
+          feedRx(cleaned);
         }
         break;
       }
 
       case 'clearLog': {
         logEntries = [];
+        rxSim.reset();
+        terminalBuffer = '';
+        terminalCaret = 0;
+        tabSync.active = false;
+        historySync = false;
+        terminalDeviceLine = null;
+        clearSyncTimers();
         renderLogArea();
         if (rxCountEl) { rxCountEl.textContent = 'RX: 0'; }
         if (txCountEl) { txCountEl.textContent = 'TX: 0'; }
@@ -1444,49 +1377,16 @@
           renderQuickCommands();
         }
         applyUiState(message.uiState || {});
-        renderFirmwareSnapshot(message.firmwareConfigSnapshot);
-        renderFirmwareSummary(message.firmwareConfigSummary);
         updateEmptyState();
         break;
       }
 
-      case 'updateUiState': {
-        applyUiState(message.uiState || {});
-        break;
-      }
-
-      case 'keilBusy': {
-        const busy = !!message.busy;
-        keilBusy = busy;
-        [keilBuildBtn, keilFlashBtn, keilBuildFlashBtn, customRunBtn, keilConfigInlineBtn, keilCheckBtn, keilSettingsBtn].forEach((element) => {
-          if (element) { element.disabled = busy; }
-        });
-        updateFirmwareActionButtons();
-        updateSendControlsDisabled();
-        if (keilStatusEl) {
-          const taskName = message.task || 'Task';
-          keilStatusEl.textContent = busy ? `Keil: Running ${taskName}...` : 'Keil: Idle';
-        }
-        break;
-      }
-
-      case 'firmwareConfigSummary': {
-        renderFirmwareSummary(message.summary);
-        break;
-      }
-
-      case 'firmwareConfigSnapshot': {
-        renderFirmwareSnapshot(message.snapshot);
-        break;
-      }
     }
   });
 
   renderQuickCommands();
   updateHistorySelect();
   updateConnectionButtons();
-  renderAccordionPanels();
-  renderFirmwareDrawer();
   updateFreezeButton();
   updateEmptyState();
 })();

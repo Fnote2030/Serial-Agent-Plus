@@ -4,7 +4,7 @@
 
 > **Note**: This project, **Serial Agent Plus**, is an unofficial fork of [Rance-OwO/Serial-Agent](https://github.com/Rance-OwO/Serial-Agent) focused on enhanced serial features. All credit for the original project belongs to the upstream authors. This repository keeps the upstream MIT license and original copyright notices, and only differentiates the publishing identifiers.
 
-Serial Agent Plus is an AI-powered embedded serial debugging and verification platform.
+Serial Agent Plus is an AI-powered embedded serial debugging platform.
 
 Upstream project:
 
@@ -61,7 +61,7 @@ workflows on top of the extension and MCP.
 
 If your client supports skill installation, install the `serialagent-plus` directory using the client-specific skill mechanism. If not, feed `SKILL.md` directly into the model prompt.
 
-Not every task needs a build-and-flash loop. Some tasks are read-only or
+Not every task needs a complex setup. Some tasks are read-only or
 open-loop serial interactions on an already running device.
 
 ## Three Deliverables
@@ -72,8 +72,8 @@ The VS Code extension is the primary product. It owns:
 
 - serial UI
 - local serial state
+- buffered logs
 - Bridge server lifecycle
-- Keil and the currently configured flasher actions
 
 Source:
 
@@ -99,7 +99,7 @@ Docs:
 ### 3. Serial Agent Plus Skill
 
 The skill is the workflow layer. It helps agents decide whether a task is
-read-only, open-loop serial work, or closed-loop firmware verification, then
+read-only or open-loop serial work, then
 use MCP tools, the extension, and the local Bridge more effectively. It is not
 a replacement for the runtime.
 
@@ -118,7 +118,7 @@ AI IDE / Agent Client
     -> Serial Agent Plus MCP
     -> Local Bridge
     -> Serial Agent Plus VS Code Extension
-    -> Serial Device / Firmware Toolchain
+    -> Serial Device
 ```
 
 More detail:

@@ -11,7 +11,7 @@ This skill teaches an agent how to:
 
 - choose the right Serial Agent Plus MCP tools for the current task
 - reason about the local runtime chain behind those tools
-- distinguish read-only inspection from side-effectful serial and firmware actions
+- distinguish read-only inspection from side-effectful serial actions
 - report conclusions from tool evidence instead of assumptions
 
 This skill does not replace the runtime.
@@ -25,13 +25,12 @@ AI Client
   -> Serial Agent Plus MCP tools
   -> Local Bridge
   -> Serial Agent Plus VS Code extension
-  -> Serial port / firmware toolchain
+  -> Serial port
 ```
 
 Key boundaries:
 
-- The VS Code extension owns the real serial state, Bridge lifecycle, and local
-  toolchain integration.
+- The VS Code extension owns the real serial state and Bridge lifecycle.
 - `serialagent-plus-mcp` exposes stdio MCP tools and forwards them to the local
   Bridge.
 - This skill only teaches the agent how to use those MCP tools correctly.
@@ -74,27 +73,14 @@ Typical actions:
 ### 2. Open-loop serial operation
 
 Use this mode when the device is already running and the task is about serial
-interaction, configuration, or shell-style command exchange. This mode does not
-require build or flash.
+interaction, configuration, or shell-style command exchange.
 
 Typical examples:
 
 - configure a Linux device over serial
 - send AT or CLI commands
 - collect logs after a manual user action
-- validate request-response behavior without changing firmware
-
-### 3. Closed-loop firmware verification
-
-Use this mode only when the task actually requires build, flash, or post-flash
-verification through the local toolchain.
-
-Typical examples:
-
-- rebuild firmware after code changes
-- flash the current artifact
-- wait for boot banners after flashing
-- verify command behavior after a new firmware image is deployed
+- validate request-response behavior on a running device
 
 ## Available MCP Tools
 
@@ -105,8 +91,6 @@ Typical examples:
 - `list_serial_ports`: inspect available serial devices before choosing a port.
 - `read_serial_log`: inspect recent buffered log lines.
 - `wait_for_output`: wait for matching serial output without sending data.
-- `check_keil_config`: inspect whether the configured build/flash toolchain is
-  ready.
 
 ### Serial side-effect tools
 
@@ -118,18 +102,6 @@ Typical examples:
 - `clear_serial_log`: clear buffered logs and counters before sensitive
   verification.
 
-### Build/flash side-effect tools
-
-- `build_keil_project`: run a build without flashing.
-- `flash_keil_firmware`: flash the configured artifact or an explicit artifact.
-- `build_and_flash_keil`: build first, then flash using the currently
-  configured flasher.
-
-Important:
-
-- Flash actions are not JLink-only. They follow the current Serial Agent Plus
-  flasher configuration.
-
 ## Decision Rules
 
 - Start with the least invasive tool set that can answer the question.
@@ -140,10 +112,6 @@ Important:
   task is genuinely asymmetric or long-running.
 - Use `clear_serial_log` before sensitive verification when stale buffered
   evidence would be misleading.
-- In closed-loop firmware work, call `check_keil_config` before build or flash
-  actions.
-- Do not assume every task needs build or flash. Many tasks are open-loop and
-  should stop at serial interaction and evidence collection.
 - Prefer conclusions grounded in tool output and logs, not inferred success.
 
 ## Recommended Playbooks
@@ -156,16 +124,6 @@ Important:
 4. `clear_serial_log` if old buffered output would pollute the check
 5. `send_and_wait` for request-response commands
 6. `read_serial_log` when you need broader context around the response
-
-### Closed-loop firmware verification
-
-1. `get_serial_status`
-2. `check_keil_config`
-3. `clear_serial_log`
-4. `build_and_flash_keil`
-5. `wait_for_output`
-6. `read_serial_log`
-7. `send_and_wait` for post-flash functional checks
 
 ### Read-only diagnosis
 
@@ -184,9 +142,6 @@ Common buckets:
 - Serial connection failure: the port is missing, busy, or not connected yet.
 - Request-response mismatch: the device accepted the send but did not emit the
   expected output.
-- Toolchain readiness failure: build/flash prerequisites are incomplete.
-- Post-flash behavior failure: the firmware changed state, but logs or command
-  responses do not match expectations.
 
 Do not collapse these into one vague "Serial Agent Plus failed" conclusion.
 

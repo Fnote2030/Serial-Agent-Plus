@@ -8,14 +8,14 @@ English version: [README_EN.md](README_EN.md)
 
 > **声明**：本插件是 **Serial Agent Plus** 的 VS Code 扩展。Serial Agent Plus 是 [Rance-OwO/Serial-Agent](https://github.com/Rance-OwO/Serial-Agent) 的非官方衍生版，主要增强串口功能；上游版权归原项目所有，本仓库保留原始版权声明。
 
-`Serial Agent Plus` 是一个面向嵌入式调试场景的 VS Code 插件。它把串口工作台、本地 Bridge 运行时，以及固件构建/烧录入口收拢到同一个工作区里，让你既可以手动完成串口调试，也可以把同一套真实运行时暴露给 AI 客户端。
+`Serial Agent Plus` 是一个面向嵌入式调试场景的 VS Code 插件。它把串口工作台和本地 Bridge 运行时收拢到同一个工作区里，让你既可以手动完成串口调试，也可以把同一套真实运行时暴露给 AI 客户端。
 
 上游项目（原始项目）：
 
 - [https://github.com/Rance-OwO/Serial-Agent](https://github.com/Rance-OwO/Serial-Agent)
 
 > [!IMPORTANT]
-> 只安装插件，也可以把它当作本地串口工作台和固件动作入口使用。
+> 只安装插件，也可以把它当作本地串口工作台使用。
 > 如果你希望接上 AI 闭环，还需要继续配置 `Serial Agent Plus MCP` 和 `Serial Agent Plus Skill`。
 > 插件负责本地运行时，MCP 负责把能力暴露给 AI，Skill 负责把工作流约束和使用规则喂给 AI。
 
@@ -25,24 +25,21 @@ English version: [README_EN.md](README_EN.md)
 
 - 串口连接、断开、日志观察、命令发送
 - 本地 Bridge Server，供 `Serial Agent Plus MCP` 调用
-- Build、Flash、Build+Flash 等固件动作入口
-- Build/Flash 配置面板与相关辅助命令
 
 如果你只是想把 VS Code 当作串口工作台，它已经能单独使用。  
-如果你希望让 AI 访问同一套真实串口状态、日志缓冲和固件动作，就继续把 `MCP` 和 `Skill` 接上。
+如果你希望让 AI 访问同一套真实串口状态和日志缓冲，就继续把 `MCP` 和 `Skill` 接上。
 
 ## 适合什么场景
 
 - 你只想在 VS Code 里完成串口连接、日志观察和命令发送
-- 你希望把串口观测、Keil 构建和烧录动作放到同一个面板里
-- 你希望让 AI 通过 MCP 调用真实的本地串口和固件工具链，而不是只读文档
-- 你希望把“观察日志 -> 发命令 -> 分析问题 -> 必要时构建/烧录 -> 再验证”串成一条可复用工作流
+- 你希望让 AI 通过 MCP 调用真实的本地串口状态和日志缓冲，而不是只读文档
+- 你希望把“观察日志 -> 发命令 -> 分析问题 -> 再验证”串成一条可复用工作流
 
 ## 它和 MCP / Skill 是什么关系
 
 这三个部分的职责不同：
 
-- 插件：本地运行时，负责串口、日志、Bridge 生命周期，以及 Keil/Flasher 动作
+- 插件：本地运行时，负责串口、日志和 Bridge 生命周期
 - MCP：工具暴露层，通过 stdio MCP tools 把插件能力提供给 AI 客户端
 - Skill：工作流层，帮助 AI 选择正确工具、判断任务模式，并按证据汇报
 
@@ -53,7 +50,7 @@ AI IDE / Agent Client
     -> Serial Agent Plus MCP
     -> Local Bridge
     -> Serial Agent Plus VS Code Extension
-    -> Serial Device / Firmware Toolchain
+    -> Serial Device
 ```
 
 如果你的目标只是“本地串口工具”，可以停在插件这一层。  
@@ -67,7 +64,11 @@ AI IDE / Agent Client
 - 在同一视图里查看 RX 日志并发送 TX 命令
 - 支持日志搜索、过滤、清空和 RX/TX 计数
 - RX 日志与 TX 发送支持 `UTF-8` / `GBK` 文本编码切换（适配打印中文的固件）
-- 支持 `Focus Mode`，把界面收敛到更偏 RX/TX 的调试视角
+- 串口参数（端口、波特率、校验等）收在可折叠的 Config 抽屉里，默认收起；波特率内置常用值下拉（含 4800 / 256000 等）
+- 勾选 `Time` 后 RX 与 TX 日志逐行显示 `[HH:MM:SS.mmm]` 时间戳
+- 发送区支持 `Cycle` 周期发送（可指定 ms 周期，默认关闭）
+- 日志面板内置终端直连：点击日志区后，可打印字符进入本地输入行并直接拼接在设备实时提示符行后显示（如 `msh > ls▌`，无实时行时回退 `>` 前缀，不再单独显示一行），`Enter` 将整行连同 CR 发送给设备；`Tab`/`↑`/`↓`/方向键/Home/End/Del 等**控制键立即透传**对应字节序列（ESC[A/B 等）给设备；`Ctrl+C` 清空输入行并发送 ETX；未连接时发送会自动按当前配置连接。`↑/↓` 历史召回与 `Tab` 补全通过设备 redraw 同步回本地输入行，此时设备编辑缓冲已持有该行——Enter 只补发 CR，本地改过则先退格清空设备行再整行发送，避免命令被设备追加成 `lsls`
+- 发送框字符模式支持嵌入转义序列：`\r` `\n` `\t` `\x41` `\\` 会转换为对应字节发送
 - 支持在侧边栏使用，也支持通过 `Open Serial Agent Plus` 打开到独立 Tab
 
 下图是串口面板本体。它既可以作为日常串口工具使用，也是整个 AI 调试链路的本地运行时入口。
@@ -85,7 +86,7 @@ AI IDE / Agent Client
 ~/.serialagent-plus/bridge.json
 ```
 
-- 插件才是真正持有串口状态、日志缓冲和固件工具链状态的运行时
+- 插件才是真正持有串口状态和日志缓冲的运行时
 - 如果插件没有启动，即使 MCP 进程能起来，tool 调用仍然会失败
 
 如果你后面要接 AI 闭环，这个 Bridge 是关键中间层。  
@@ -107,27 +108,6 @@ AI IDE / Agent Client
 
 <p align="left">
   <img src="./image/README/1777477193656.png" alt="Bridge API testing" width="420" />
-</p>
-
-### 固件动作与配置
-
-- 面板顶部执行动作聚焦在 `Build`、`Flash`、`Build+Flash`
-- 提供 `Open Build/Flash Config Panel`，用于交互式配置构建和烧录参数
-- 提供 `Check Build/Flash Config`，用于在执行前检查配置完整性
-- 提供 `Open Keil/Flash Settings` 和 `Select JLink CPU Name` 等辅助命令
-- `F7` 动作可配置为仅构建，或构建后立即烧录
-
-当前支持的烧录后端：
-
-- `jlink`
-- `stlink`
-- `openocd`
-
-下面这张图是 Build/Flash 相关操作入口。  
-如果你当前只做串口观察和命令交互，不一定需要先配置它；只有在任务确实需要构建或烧录时，再进入这部分即可。
-
-<p align="left">
-  <img src="./image/README/1777475704306.png" alt="Build and Flash actions" width="420" />
 </p>
 
 ## 安装
@@ -207,12 +187,12 @@ npm --workspace packages/serialagent-plus run pack
 
 ### 路径 2：把 AI 闭环一起接上
 
-如果你希望 AI 真正调用本地串口和固件动作，而不是只读 README 或猜测日志，你需要继续完成 `Bridge -> MCP -> Skill` 这条链路。
+如果你希望 AI 真正调用本地串口状态和日志缓冲，而不是只读 README 或猜测日志，你需要继续完成 `Bridge -> MCP -> Skill` 这条链路。
 
 #### 第一步：先确保插件已经在运行
 
 这是整个闭环的前提。  
-插件必须先启动，因为 Bridge、本地串口状态、日志缓冲，以及 Build/Flash 能力都由插件持有。
+插件必须先启动，因为 Bridge、本地串口状态和日志缓冲都由插件持有。
 
 你可以先完成下面任一动作：
 
@@ -304,7 +284,6 @@ http://127.0.0.1:<port>/api/status
 
 - 当前是只读检查
 - 还是开环串口交互
-- 还是确实需要进入 build / flash / post-flash 闭环
 
 如果你的 AI 客户端支持 skill 安装，优先走客户端自己的安装机制。  
 如果客户端不支持 skill 安装，也可以直接把 `SKILL.md` 内容喂给模型。
@@ -324,40 +303,6 @@ http://127.0.0.1:<port>/api/status
 
 这一步的意义是确认：AI 看到的不是一套模拟环境，而是和你在 VS Code 里使用的是同一套真实运行时。
 
-## Build / Flash 进阶使用
-
-只有当你的任务真的需要构建或烧录固件时，再进入这部分。
-
-如果你希望在插件里直接执行构建和烧录，通常需要先配置这些基础项：
-
-- `serialagent.keil.projectFile`
-- `serialagent.keil.target`
-- `serialagent.keil.uv4Path`
-- `serialagent.keil.armcc5Path`
-- `serialagent.keil.f7Action`
-- `serialagent.flash.method`
-
-然后按当前使用的烧录后端继续补齐：
-
-- `serialagent.jlink.*`
-- `serialagent.stlink.*`
-- `serialagent.openocd.*`
-
-常见入口包括：
-
-- `Serial Agent Plus: Open Build/Flash Config Panel`
-- `Serial Agent Plus: Check Build/Flash Config`
-- `Serial Agent Plus: Open Keil/Flash Settings`
-- `Serial Agent Plus: Select JLink CPU Name`
-
-建议使用顺序：
-
-1. 先用 `Check Build/Flash Config` 检查配置是否完整
-2. 只需要编译时，执行 `Build`
-3. 需要下板验证时，再执行 `Flash` 或 `Build+Flash`
-
-这能避免把“本来只是串口交互任务”错误升级成必须烧录的闭环任务。
-
 ## 常见问题
 
 ### 1. 为什么浏览器直接打开 Bridge 会报 `AUTH_REQUIRED`
@@ -368,7 +313,7 @@ http://127.0.0.1:<port>/api/status
 ### 2. 为什么 MCP 已经配置好了，但 tool 调用还是失败
 
 常见原因是插件没有启动，或者插件启动后 Bridge 还没准备好。  
-MCP 本身只是工具暴露层，真正持有串口状态和工具链状态的是插件侧本地运行时。
+MCP 本身只是工具暴露层，真正持有串口状态和日志缓冲的是插件侧本地运行时。
 
 ### 3. `bridge.json` 不存在怎么办
 
@@ -384,11 +329,6 @@ MCP 本身只是工具暴露层，真正持有串口状态和工具链状态的�
 
 不需要。  
 如果你只做本地串口连接、日志观察和命令发送，插件本身就够了。
-
-### 5. Build/Flash 是不是必须先配置
-
-不是。  
-只有任务明确需要构建或烧录固件时，才需要进入这部分配置。很多日常场景只需要串口工作台。
 
 ## 更多文档入口
 

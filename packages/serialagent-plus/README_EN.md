@@ -8,14 +8,14 @@ Chinese version: [README.md](README.md)
 
 > **Note**: This extension is the VS Code extension of **Serial Agent Plus**. Serial Agent Plus is an unofficial fork of [Rance-OwO/Serial-Agent](https://github.com/Rance-OwO/Serial-Agent) focused on enhanced serial features. All credit for the original project belongs to the upstream authors; this repository keeps the original copyright notices.
 
-`Serial Agent Plus` is a VS Code extension for embedded debugging. It brings a serial workspace, a local Bridge runtime, and firmware build or flash entrypoints into the same workspace, so you can either debug devices manually or expose the exact same real runtime to AI clients.
+`Serial Agent Plus` is a VS Code extension for embedded debugging. It brings a serial workspace and a local Bridge runtime into the same workspace, so you can either debug devices manually or expose the exact same real runtime to AI clients.
 
 Upstream project:
 
 - <https://github.com/Rance-OwO/Serial-Agent>
 
 > [!IMPORTANT]
-> The extension can already be used on its own as a local serial workspace and firmware action entrypoint.
+> The extension can already be used on its own as a local serial workspace.
 > If you want the AI closed loop, you still need to configure both `Serial Agent Plus MCP` and `Serial Agent Plus Skill`.
 > The extension owns the local runtime, the MCP package exposes capabilities to AI clients, and the skill gives the AI workflow rules and usage guidance.
 
@@ -25,24 +25,21 @@ Many serial tools only solve two things: watch logs and send commands. `Serial A
 
 - serial connect, disconnect, log observation, and command sending
 - a local Bridge server for `Serial Agent Plus MCP`
-- firmware action entrypoints such as `Build`, `Flash`, and `Build+Flash`
-- a Build/Flash configuration panel and related helper commands
 
 If you only want to use VS Code as a serial workspace, the extension already works on its own.  
-If you want AI to access the same real serial state, log buffer, and firmware actions, continue by wiring in the `MCP` and the `Skill`.
+If you want AI to access the same real serial state and log buffer, continue by wiring in the `MCP` and the `Skill`.
 
 ## What Scenarios It Fits
 
 - You want to finish serial connection, log observation, and command sending inside VS Code
-- You want serial observation, Keil build, and flash actions in one panel
-- You want AI to call the real local serial port and firmware toolchain through MCP instead of only reading docs
-- You want to turn "observe logs -> send commands -> analyze -> build or flash if needed -> verify again" into a reusable workflow
+- You want AI to call the real local serial state and log buffer through MCP instead of only reading docs
+- You want to turn "observe logs -> send commands -> analyze -> verify again" into a reusable workflow
 
 ## How It Relates To MCP / Skill
 
 These three parts have different responsibilities:
 
-- Extension: the local runtime. It owns serial state, logs, Bridge lifecycle, and Keil or flasher actions
+- Extension: the local runtime. It owns serial state, logs, and Bridge lifecycle
 - MCP: the tool exposure layer. It provides the extension capabilities to AI clients through stdio MCP tools
 - Skill: the workflow layer. It helps the AI choose the right tools, understand task mode, and report with evidence
 
@@ -53,7 +50,7 @@ AI IDE / Agent Client
     -> Serial Agent Plus MCP
     -> Local Bridge
     -> Serial Agent Plus VS Code Extension
-    -> Serial Device / Firmware Toolchain
+    -> Serial Device
 ```
 
 If your goal is only "a local serial tool", you can stop at the extension layer.  
@@ -66,7 +63,12 @@ If your goal is "AI participates in the real debugging loop", you need the next 
 - Connect to and disconnect from serial devices directly inside VS Code
 - Inspect RX logs and send TX commands in the same view
 - Search, filter, clear logs, and monitor RX/TX counters
-- Use `Focus Mode` for a tighter RX/TX-oriented debugging view
+- RX log and TX send support `UTF-8` / `GBK` text encoding switching
+- Serial port settings (port, baud, parity, etc.) live in a collapsible Config drawer, collapsed by default; the baud field offers common preset values (including 4800 / 256000)
+- With `Time` checked, RX and TX log lines are prefixed with `[HH:MM:SS.mmm]` timestamps line by line
+- The send area supports `Cycle` periodic sending (configurable ms interval, off by default)
+- The log panel is a direct terminal: click it and printable keys go into a local input line rendered inline with the live device prompt (e.g. `msh > ls▌`; falls back to a `>` prefix when there is no live line — no separate input row); `Enter` sends the whole line plus CR to the device, while `Tab`/`↑`/`↓`/arrow/Home/End/Del keys **pass through immediately** as byte sequences (ESC[A/B etc.); `Ctrl+C` clears the line and sends ETX; sending while disconnected connects with the current config first. `↑/↓` history recall and `Tab` completion sync the device redraw back into the local input line — at that point the device edit buffer already holds the line, so Enter only sends CR (if you edited the line locally, it first backspace-clears the device line and resends), preventing the device from appending the command into `lsls`
+- The send box character mode supports embedded escape sequences: `\r` `\n` `\t` `\x41` `\\` are converted to the corresponding bytes
 - Use it in the sidebar, or open it in a dedicated tab with `Open Serial Agent Plus`
 
 The image below is the serial panel itself. It can be used as a daily serial tool, and it is also the local runtime entrypoint for the full AI debugging chain.
@@ -84,7 +86,7 @@ The image below is the serial panel itself. It can be used as a daily serial too
 ~/.serialagent-plus/bridge.json
 ```
 
-- The extension is the real runtime that owns serial state, log buffers, and firmware toolchain state
+- The extension is the real runtime that owns serial state and log buffers
 - If the extension is not running, MCP may start successfully but tool calls will still fail
 
 If you want the AI closed loop later, this Bridge is the key middle layer.  
@@ -106,27 +108,6 @@ The following images correspond to Bridge-related learning scenarios:
 
 <p align="left">
   <img src="./image/README/1777477193656.png" alt="Bridge API testing" width="420" />
-</p>
-
-### Firmware actions and configuration
-
-- The top action area focuses on `Build`, `Flash`, and `Build+Flash`
-- `Open Build/Flash Config Panel` is provided for interactive build and flash configuration
-- `Check Build/Flash Config` is provided to validate configuration completeness before execution
-- `Open Keil/Flash Settings` and `Select JLink CPU Name` are provided as helper commands
-- `F7` can be configured as build only, or build followed by flash
-
-Currently supported flash backends:
-
-- `jlink`
-- `stlink`
-- `openocd`
-
-The image below shows the Build/Flash-related action entrypoint.  
-If you currently only care about serial observation and command interaction, you do not need to configure this first. Enter this part only when the task really requires build or flash.
-
-<p align="left">
-  <img src="./image/README/1777475704306.png" alt="Build and flash actions" width="420" />
 </p>
 
 ## Install
@@ -206,12 +187,12 @@ If your goal is only serial connection, log observation, and command sending, yo
 
 ### Path 2: Add the AI closed loop
 
-If you want AI to actually call local serial and firmware actions instead of only reading the README or guessing from logs, continue with the `Bridge -> MCP -> Skill` chain.
+If you want AI to actually call local serial state and log buffers instead of only reading the README or guessing from logs, continue with the `Bridge -> MCP -> Skill` chain.
 
 #### Step 1: Make sure the extension is already running
 
 This is the prerequisite for the entire loop.  
-The extension must start first, because the Bridge, local serial state, log buffers, and Build/Flash capabilities are all owned by the extension runtime.
+The extension must start first, because the Bridge, local serial state, and log buffers are all owned by the extension runtime.
 
 You can do either of the following first:
 
@@ -303,7 +284,6 @@ For example, it helps the AI decide whether the current task is:
 
 - read-only inspection
 - open-loop serial interaction
-- or a real build / flash / post-flash closed loop
 
 If your AI client supports skill installation, prefer the client's native installation flow.  
 If the client does not support skills, you can still feed the contents of `SKILL.md` directly into the model prompt.
@@ -323,40 +303,6 @@ A typical minimal goal is:
 
 The point of this step is to verify that the AI is seeing the same real runtime you are using in VS Code, not a simulated environment.
 
-## Advanced Build / Flash Usage
-
-Only enter this section when the task really requires building or flashing firmware.
-
-If you want to execute build and flash actions directly in the extension, you usually need to configure these basics first:
-
-- `serialagent.keil.projectFile`
-- `serialagent.keil.target`
-- `serialagent.keil.uv4Path`
-- `serialagent.keil.armcc5Path`
-- `serialagent.keil.f7Action`
-- `serialagent.flash.method`
-
-Then continue with the backend-specific settings you actually use:
-
-- `serialagent.jlink.*`
-- `serialagent.stlink.*`
-- `serialagent.openocd.*`
-
-Common entrypoints include:
-
-- `Serial Agent Plus: Open Build/Flash Config Panel`
-- `Serial Agent Plus: Check Build/Flash Config`
-- `Serial Agent Plus: Open Keil/Flash Settings`
-- `Serial Agent Plus: Select JLink CPU Name`
-
-Suggested order:
-
-1. run `Check Build/Flash Config` first
-2. use `Build` when you only need compilation
-3. use `Flash` or `Build+Flash` when you need on-board verification
-
-This helps avoid escalating a task that is really just serial interaction into an unnecessary flash loop.
-
 ## Common Questions
 
 ### 1. Why does opening the Bridge in a browser return `AUTH_REQUIRED`
@@ -367,7 +313,7 @@ If you access it directly without `Authorization: Bearer <token>`, it returns an
 ### 2. Why do tool calls still fail even though MCP is configured
 
 The common reason is that the extension is not running, or it is running but the Bridge is not ready yet.  
-MCP is only the tool exposure layer. The real serial state and toolchain state live in the extension-side local runtime.
+MCP is only the tool exposure layer. The real serial state and log buffer live in the extension-side local runtime.
 
 ### 3. What if `bridge.json` does not exist
 
@@ -383,11 +329,6 @@ If the discovery file is missing, it usually means the Bridge has not started ye
 
 No.  
 If you only do local serial connection, log observation, and command sending, the extension itself is enough.
-
-### 5. Do I have to configure Build/Flash first
-
-No.  
-Only enter that configuration when the task explicitly requires building or flashing firmware. Many daily scenarios only need the serial workspace.
 
 ## More Documentation
 

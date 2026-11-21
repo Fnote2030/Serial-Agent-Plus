@@ -16,11 +16,6 @@
  *   - clear_serial_log     清空日志缓冲区
  *   - wait_for_output      等待特定输出
  *   - send_and_wait        原子性发送+等待响应
- *   - check_keil_config    检测 Keil/Flasher 配置是否完整
- *   - build_keil_project   触发 Keil 编译
- *   - flash_keil_firmware  触发当前配置的烧录器执行烧录
- *   - build_and_flash_keil 一键编译并烧录
- *   - run_custom_command   运行用户配置的 Custom 命令
  *
  * 传输方式：stdio（标准输入输出）
  *
@@ -352,47 +347,6 @@ export function registerTools(
     if (lineEnding !== undefined) { body.lineEnding = lineEnding; }
     return requester('POST', '/api/send-and-wait', body, httpTimeoutMs);
   },
-  );
-
-  targetServer.tool(
-  'check_keil_config',
-  'Read-only toolchain validation. Checks whether Keil and the configured firmware flasher are ready for build and flash. Does not build, flash, or modify firmware.',
-  {},
-  async () => requester('GET', '/api/keil/config-check'),
-  );
-
-  targetServer.tool(
-  'build_keil_project',
-  'External toolchain action. Invokes a Keil build and may update local build artifacts on disk. Does not flash the target device.',
-  {},
-  async () => requester('POST', '/api/keil/build'),
-  );
-
-  targetServer.tool(
-  'flash_keil_firmware',
-  'External side-effectful toolchain action. Invokes the configured firmware flasher and may overwrite firmware on the connected target device.',
-  {
-    artifactPath: z.string().optional().describe('Optional absolute artifact path (.hex/.axf/.bin)'),
-  },
-  async ({ artifactPath }) => {
-    const body: Record<string, unknown> = {};
-    if (artifactPath) { body.artifactPath = artifactPath; }
-    return requester('POST', '/api/keil/flash', body);
-  },
-  );
-
-  targetServer.tool(
-  'build_and_flash_keil',
-  'External side-effectful toolchain action. Runs Keil build and the configured firmware flasher in one call, updating local artifacts and target device firmware state.',
-  {},
-  async () => requester('POST', '/api/keil/build-and-flash'),
-  );
-
-  targetServer.tool(
-  'run_custom_command',
-  'External side-effectful toolchain action. Runs the user-configured Custom command from Serial Agent Plus settings. Independent from Keil build/flash.',
-  {},
-  async () => requester('POST', '/api/custom/run'),
   );
 }
 

@@ -5,7 +5,7 @@
 > **Note**: This package is the MCP server of **Serial Agent Plus**, an unofficial fork of [Rance-OwO/Serial-Agent](https://github.com/Rance-OwO/Serial-Agent) focused on enhanced serial features. All credit for the original project belongs to the upstream authors; this repository keeps the original copyright notices.
 
 `Serial Agent Plus MCP` is the MCP server for the `Serial Agent Plus` platform. It exposes
-serial and firmware tools over stdio and forwards requests to the local Bridge
+serial tools over stdio and forwards requests to the local Bridge
 started by the VS Code extension `Serial Agent Plus`.
 
 Upstream project:
@@ -33,7 +33,6 @@ This MCP is not a standalone product. It requires the VS Code extension
 - serial connection state
 - buffered logs
 - Bridge lifecycle
-- Keil and JLink toolchain execution
 
 The MCP package is the stdio adapter that lets AI clients call those
 capabilities through MCP tools.
@@ -104,10 +103,6 @@ Current tool surface:
 7. `clear_serial_log`
 8. `wait_for_output`
 9. `send_and_wait`
-10. `check_keil_config`
-11. `build_keil_project`
-12. `flash_keil_firmware`
-13. `build_and_flash_keil`
 
 ## Distribution Order
 

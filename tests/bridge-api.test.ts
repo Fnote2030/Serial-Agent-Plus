@@ -12,7 +12,7 @@ import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
 import * as http from 'http';
 import { BridgeServer } from '../packages/serialagent-plus/src/bridge-server';
 import { MockSerialManager } from './mocks/mock-serial-manager';
-import { CustomCommandTaskResult, ILogger, IKeilApi, KeilConfigCheckResult, KeilTaskResult } from '../packages/serialagent-plus/src/types';
+import { ILogger } from '../packages/serialagent-plus/src/types';
 
 // ---- 测试工具 ----
 
@@ -20,59 +20,6 @@ import { CustomCommandTaskResult, ILogger, IKeilApi, KeilConfigCheckResult, Keil
 class SilentLogger implements ILogger {
   readonly lines: string[] = [];
   appendLine(value: string): void { this.lines.push(value); }
-}
-
-class FakeKeilApi implements IKeilApi {
-  busy = false;
-  checkConfigError: Error | null = null;
-  buildError: Error | null = null;
-  flashError: Error | null = null;
-  buildAndFlashError: Error | null = null;
-  customError: Error | null = null;
-  customResult: CustomCommandTaskResult = {
-    success: true,
-    preview: 'python3 tools/flash.py',
-    cwd: 'D:/workspace',
-    exitCode: 0,
-  };
-  configReport: KeilConfigCheckResult = {
-    ready: true,
-    checks: [{ key: 'uv4Path', ok: true, message: 'ok' }],
-    projectFile: 'D:/_KeilProject/demo.uvprojx',
-    target: 'Target 1',
-  };
-  buildResult: KeilTaskResult = {
-    success: true,
-    flasher: 'jlink',
-    projectFile: 'D:/_KeilProject/demo.uvprojx',
-    artifactPath: 'D:/_KeilProject/Objects/demo.hex',
-    target: 'Target 1',
-  };
-
-  isBusy(): boolean { return this.busy; }
-  async checkConfig(): Promise<KeilConfigCheckResult> {
-    if (this.checkConfigError) { throw this.checkConfigError; }
-    return this.configReport;
-  }
-  async build(): Promise<KeilTaskResult> {
-    if (this.buildError) { throw this.buildError; }
-    return this.buildResult;
-  }
-  async flash(artifactPath?: string): Promise<KeilTaskResult> {
-    if (this.flashError) { throw this.flashError; }
-    if (artifactPath) {
-      return { ...this.buildResult, artifactPath };
-    }
-    return this.buildResult;
-  }
-  async buildAndFlash(): Promise<KeilTaskResult> {
-    if (this.buildAndFlashError) { throw this.buildAndFlashError; }
-    return this.buildResult;
-  }
-  async runCustomCommand(): Promise<CustomCommandTaskResult> {
-    if (this.customError) { throw this.customError; }
-    return this.customResult;
-  }
 }
 
 /** 发送 HTTP 请求并返回解析后的响应 */
@@ -677,101 +624,6 @@ describe('Bridge Server API', () => {
       expect(parsed.success).toBe(false);
       expect(parsed.error.code).toBe('INVALID_JSON_BODY');
       expect(parsed.error.message).toContain('Invalid JSON body');
-    });
-  });
-
-  describe('Keil API 状态码与错误码', () => {
-    it('Keil API 未初始化应返回 501 + 统一错误格式', async () => {
-      const res = await authRequest('GET', '/api/keil/config-check');
-      expect(res.status).toBe(501);
-      expect(res.data.success).toBe(false);
-      expect(res.data.error.code).toBe('KEIL_API_UNAVAILABLE');
-      expect(res.data.error.message).toContain('not initialized');
-    });
-
-    it('Keil busy 场景应返回 409 + KEIL_TASK_BUSY', async () => {
-      const keilApi = new FakeKeilApi();
-      keilApi.busy = true;
-      bridge.setKeilApi(keilApi);
-
-      const res = await authRequest('POST', '/api/keil/build');
-      expect(res.status).toBe(409);
-      expect(res.data.success).toBe(false);
-      expect(res.data.error.code).toBe('KEIL_TASK_BUSY');
-      expect(res.data.error.details.stage).toBe('build');
-    });
-
-    it('Keil build 成功应返回 200 + success/data', async () => {
-      const keilApi = new FakeKeilApi();
-      bridge.setKeilApi(keilApi);
-
-      const res = await authRequest('POST', '/api/keil/build');
-      expect(res.status).toBe(200);
-      expect(res.data.success).toBe(true);
-      expect(res.data.data.stage).toBe('build');
-      expect(res.data.data.buildOk).toBe(true);
-      expect(res.data.data.flasher).toBe('jlink');
-      expect(res.data.data.artifactPath).toContain('.hex');
-    });
-
-    it('Keil config-check 配置缺失应返回 400 + KEIL_CONFIG_INVALID', async () => {
-      const keilApi = new FakeKeilApi();
-      keilApi.checkConfigError = new Error('Cannot find UV4 executable');
-      bridge.setKeilApi(keilApi);
-
-      const res = await authRequest('GET', '/api/keil/config-check');
-      expect(res.status).toBe(400);
-      expect(res.data.success).toBe(false);
-      expect(res.data.error.code).toBe('KEIL_CONFIG_INVALID');
-      expect(res.data.error.details.stage).toBe('config-check');
-    });
-
-    it('Keil flash 执行失败应返回 500 + KEIL_FLASH_FAILED', async () => {
-      const keilApi = new FakeKeilApi();
-      keilApi.flashError = new Error('JLink failed unexpectedly');
-      bridge.setKeilApi(keilApi);
-
-      const res = await authRequest('POST', '/api/keil/flash', { artifactPath: 'D:/tmp/demo.hex' });
-      expect(res.status).toBe(500);
-      expect(res.data.success).toBe(false);
-      expect(res.data.error.code).toBe('KEIL_FLASH_FAILED');
-      expect(res.data.error.details.stage).toBe('flash');
-    });
-
-    it('Keil build-and-flash 成功应返回 200 + buildOk/flashOk', async () => {
-      const keilApi = new FakeKeilApi();
-      bridge.setKeilApi(keilApi);
-
-      const res = await authRequest('POST', '/api/keil/build-and-flash');
-      expect(res.status).toBe(200);
-      expect(res.data.success).toBe(true);
-      expect(res.data.data.stage).toBe('build-and-flash');
-      expect(res.data.data.buildOk).toBe(true);
-      expect(res.data.data.flashOk).toBe(true);
-      expect(res.data.data.flasher).toBe('jlink');
-    });
-
-    it('Custom command 成功应返回 200 + customOk', async () => {
-      const keilApi = new FakeKeilApi();
-      bridge.setKeilApi(keilApi);
-
-      const res = await authRequest('POST', '/api/custom/run');
-      expect(res.status).toBe(200);
-      expect(res.data.success).toBe(true);
-      expect(res.data.data.stage).toBe('custom');
-      expect(res.data.data.customOk).toBe(true);
-      expect(res.data.data.preview).toBe('python3 tools/flash.py');
-    });
-
-    it('Custom command 失败应返回 CUSTOM_COMMAND_FAILED', async () => {
-      const keilApi = new FakeKeilApi();
-      keilApi.customError = new Error('Custom command failed with exit code 7');
-      bridge.setKeilApi(keilApi);
-
-      const res = await authRequest('POST', '/api/custom/run');
-      expect(res.status).toBe(500);
-      expect(res.data.success).toBe(false);
-      expect(res.data.error.code).toBe('CUSTOM_COMMAND_FAILED');
     });
   });
 });

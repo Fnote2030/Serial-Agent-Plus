@@ -4,7 +4,7 @@ English version: [README_EN.md](README_EN.md)
 
 > **声明**：本包是 **Serial Agent Plus** 的 MCP 服务端。Serial Agent Plus 是 [Rance-OwO/Serial-Agent](https://github.com/Rance-OwO/Serial-Agent) 的非官方衍生版，主要增强串口功能；上游版权归原项目所有，本仓库保留原始版权声明。
 
-`Serial Agent Plus MCP` 是 `Serial Agent Plus` 平台的 MCP 服务端。它通过 stdio 暴露串口与固件相关工具，并把请求转发给 VS Code 插件 `Serial Agent Plus` 启动的本地 Bridge。
+`Serial Agent Plus MCP` 是 `Serial Agent Plus` 平台的 MCP 服务端。它通过 stdio 暴露串口相关工具，并把请求转发给 VS Code 插件 `Serial Agent Plus` 启动的本地 Bridge。
 
 上游项目（原始项目）：
 
@@ -29,7 +29,6 @@ VS Code Extension -> local Bridge -> MCP -> AI IDE
 - 串口连接状态
 - 日志缓冲
 - Bridge 生命周期
-- Keil / JLink 工具链执行
 
 MCP 包本身只是 stdio 适配层，让 AI 客户端能够通过 MCP tools 调用这些能力。
 
@@ -98,10 +97,6 @@ node packages/serialagent-plus-mcp/dist/serialagent-plus-mcp-<package-version>.j
 7. `clear_serial_log`
 8. `wait_for_output`
 9. `send_and_wait`
-10. `check_keil_config`
-11. `build_keil_project`
-12. `flash_keil_firmware`
-13. `build_and_flash_keil`
 
 ## 发布顺序
 

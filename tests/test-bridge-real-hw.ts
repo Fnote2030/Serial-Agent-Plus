@@ -154,6 +154,11 @@ class RealSerialManager implements ISerialManager {
     for (const cb of this._newLogSubscribers) { cb(line); }
   }
 
+  injectTxLog(data: string): void {
+    const body = String(data).split('\n').map((line) => `MCP TX>> ${line}`).join('\n');
+    this.injectLog(body);
+  }
+
   onNewLog(callback: (line: string) => void): void {
     this._newLogSubscribers.push(callback);
   }

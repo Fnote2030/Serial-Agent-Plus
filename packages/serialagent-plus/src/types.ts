@@ -81,6 +81,9 @@ export interface ISerialManager {
   /** 注入一行日志到缓冲区（用于 Bridge API Echo 等场景） */
   injectLog(line: string): void;
 
+  /** 注入 TX 回显日志（MCP 发送），showTimestamp 开启时为每行添加时间戳前缀 */
+  injectTxLog(data: string): void;
+
   /** 订阅新日志行（增量监听，用于 wait_for_output） */
   onNewLog(callback: (line: string) => void): void;
   /** 取消订阅新日志行 */
@@ -95,47 +98,4 @@ export interface ISerialManager {
  */
 export interface ILogger {
   appendLine(value: string): void;
-}
-
-/** Keil 配置检查项 */
-export interface KeilConfigCheckItem {
-  key: string;
-  ok: boolean;
-  message: string;
-  value?: string;
-}
-
-/** Keil 配置检查结果 */
-export interface KeilConfigCheckResult {
-  ready: boolean;
-  checks: KeilConfigCheckItem[];
-  projectFile?: string;
-  target?: string;
-}
-
-/** Keil/Flasher 执行结果（build/flash/buildAndFlash） */
-export interface KeilTaskResult {
-  success: boolean;
-  flasher?: 'jlink' | 'stlink' | 'openocd';
-  projectFile: string;
-  artifactPath?: string;
-  target?: string;
-}
-
-/** Custom 命令执行结果 */
-export interface CustomCommandTaskResult {
-  success: boolean;
-  preview: string;
-  cwd: string;
-  exitCode: number;
-}
-
-/** BridgeServer 调用的 Keil API 抽象 */
-export interface IKeilApi {
-  isBusy(): boolean;
-  checkConfig(): Promise<KeilConfigCheckResult>;
-  build(): Promise<KeilTaskResult>;
-  flash(artifactPath?: string): Promise<KeilTaskResult>;
-  buildAndFlash(): Promise<KeilTaskResult>;
-  runCustomCommand(): Promise<CustomCommandTaskResult>;
 }

@@ -17,7 +17,7 @@ import * as crypto from 'crypto';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
-import { ISerialManager, ILogger, SerialConfig, IKeilApi } from './types';
+import { ISerialManager, ILogger, SerialConfig } from './types';
 import { encodeSerialText } from './text-codec';
 
 export class BridgeServer {
@@ -28,7 +28,6 @@ export class BridgeServer {
   private _serialManager: ISerialManager;
   private _logger: ILogger;
   private _onUiClear: (() => void) | null = null;
-  private _keilApi: IKeilApi | null = null;
 
   /** 进行中的 wait 请求取消函数列表（S2.05: 优雅关闭用） */
   private _activeWaiters: Set<() => void> = new Set();
@@ -46,8 +45,6 @@ export class BridgeServer {
 
   /** 设置 UI 同步回调：Bridge API 清空日志时通知 Webview */
   setOnUiClear(cb: () => void): void { this._onUiClear = cb; }
-  /** 设置 Keil API：供 Bridge 调用配置检测、编译、烧录 */
-  setKeilApi(api: IKeilApi): void { this._keilApi = api; }
 
   get port(): number { return this._port; }
   get token(): string { return this._token; }
@@ -187,12 +184,6 @@ export class BridgeServer {
       else if (method === 'GET'  && pathname === '/api/log/wait')   { await this._handleLogWait(res, url); }
       else if (method === 'POST' && pathname === '/api/send-and-wait') { await this._handleSendAndWait(req, res); }
       else if (method === 'POST' && pathname === '/api/clear')      { await this._handleClear(res); }
-      else if (method === 'GET'  && pathname === '/api/keil/config-check') { await this._handleKeilConfigCheck(res); }
-      else if (method === 'POST' && pathname === '/api/keil/build') { await this._handleKeilBuild(res); }
-      else if (method === 'POST' && pathname === '/api/keil/flash') { await this._handleKeilFlash(req, res); }
-      else if (method === 'POST' && pathname === '/api/keil/build-and-flash') { await this._handleKeilBuildAndFlash(res); }
-      else if (method === 'POST' && pathname === '/api/keil/build-flash') { await this._handleKeilBuildAndFlash(res); } // alias
-      else if (method === 'POST' && pathname === '/api/custom/run') { await this._handleCustomRun(res); }
       else {
         this._jsonError(res, 404, 'NOT_FOUND', `Not found: ${method} ${pathname}`, {
           method,
@@ -270,17 +261,6 @@ export class BridgeServer {
     this._json(res, status, payload);
   }
 
-  private _mapKeilError(err: unknown, fallbackCode: string): { status: number; code: string; message: string } {
-    const msg = err instanceof Error ? err.message : String(err);
-    if (msg.includes('KEIL_TASK_BUSY')) {
-      return { status: 409, code: 'KEIL_TASK_BUSY', message: 'Another Keil build/flash task is currently running' };
-    }
-    if (msg.toLowerCase().includes('cannot find') || msg.toLowerCase().includes('missing')) {
-      return { status: 400, code: 'KEIL_CONFIG_INVALID', message: msg };
-    }
-    return { status: 500, code: fallbackCode, message: msg };
-  }
-
   private _mapUnexpectedError(message: string): { status: number; code: string } {
     const text = message.toLowerCase();
     if (text.includes('timeout') || text.includes('timed out')) {
@@ -296,14 +276,6 @@ export class BridgeServer {
       return { status: 500, code: 'SERIAL_EXCEPTION' };
     }
     return { status: 500, code: 'INTERNAL_SERVER_ERROR' };
-  }
-
-  private _ensureKeilApi(res: http.ServerResponse): IKeilApi | null {
-    if (!this._keilApi) {
-      this._jsonError(res, 501, 'KEIL_API_UNAVAILABLE', 'Keil API is not initialized in extension');
-      return null;
-    }
-    return this._keilApi;
   }
 
   // ---- API Handlers (S1.03 ~ S1.09) ----
@@ -589,7 +561,7 @@ export class BridgeServer {
       const suffixes: Record<string, string> = { lf: '\n', crlf: '\r\n', cr: '\r', none: '' };
       bytesSent = encodeSerialText(data + (suffixes[lineEnding] ?? '\n'), this._serialManager.config.encoding).length;
     }
-    this._serialManager.injectLog(`MCP TX>> ${data}`);
+    this._serialManager.injectTxLog(data);
     return { ok: true, bytesSent };
   }
 
@@ -670,136 +642,5 @@ export class BridgeServer {
     this._serialManager.resetCounters();
     this._onUiClear?.();
     this._json(res, 200, { success: true });
-  }
-
-  private async _handleKeilConfigCheck(res: http.ServerResponse): Promise<void> {
-    const keilApi = this._ensureKeilApi(res);
-    if (!keilApi) { return; }
-
-    try {
-      const report = await keilApi.checkConfig();
-      this._json(res, 200, {
-        success: true,
-        data: {
-          configOk: report.ready,
-          checks: report.checks,
-          projectFile: report.projectFile,
-          target: report.target,
-        },
-      });
-    } catch (err: unknown) {
-      const mapped = this._mapKeilError(err, 'KEIL_CONFIG_CHECK_FAILED');
-      this._jsonError(res, mapped.status, mapped.code, mapped.message, { stage: 'config-check' });
-    }
-  }
-
-  private async _handleKeilBuild(res: http.ServerResponse): Promise<void> {
-    const keilApi = this._ensureKeilApi(res);
-    if (!keilApi) { return; }
-    if (keilApi.isBusy()) {
-      this._jsonError(res, 409, 'KEIL_TASK_BUSY', 'Another Keil build/flash task is currently running', { stage: 'build' });
-      return;
-    }
-
-    try {
-      const result = await keilApi.build();
-      this._json(res, 200, {
-        success: true,
-        data: {
-          stage: 'build',
-          buildOk: result.success,
-          flasher: result.flasher,
-          artifactPath: result.artifactPath,
-          projectFile: result.projectFile,
-          target: result.target,
-        },
-      });
-    } catch (err: unknown) {
-      const mapped = this._mapKeilError(err, 'KEIL_BUILD_FAILED');
-      this._jsonError(res, mapped.status, mapped.code, mapped.message, { stage: 'build' });
-    }
-  }
-
-  private async _handleKeilFlash(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
-    const keilApi = this._ensureKeilApi(res);
-    if (!keilApi) { return; }
-    if (keilApi.isBusy()) {
-      this._jsonError(res, 409, 'KEIL_TASK_BUSY', 'Another Keil build/flash task is currently running', { stage: 'flash' });
-      return;
-    }
-
-    try {
-      const body = await this._readBody(req);
-      const artifactPath = typeof body.artifactPath === 'string' ? body.artifactPath : undefined;
-      const result = await keilApi.flash(artifactPath);
-      this._json(res, 200, {
-        success: true,
-        data: {
-          stage: 'flash',
-          flashOk: result.success,
-          flasher: result.flasher,
-          artifactPath: result.artifactPath,
-          projectFile: result.projectFile,
-          target: result.target,
-        },
-      });
-    } catch (err: unknown) {
-      const mapped = this._mapKeilError(err, 'KEIL_FLASH_FAILED');
-      this._jsonError(res, mapped.status, mapped.code, mapped.message, { stage: 'flash' });
-    }
-  }
-
-  private async _handleKeilBuildAndFlash(res: http.ServerResponse): Promise<void> {
-    const keilApi = this._ensureKeilApi(res);
-    if (!keilApi) { return; }
-    if (keilApi.isBusy()) {
-      this._jsonError(res, 409, 'KEIL_TASK_BUSY', 'Another Keil build/flash task is currently running', { stage: 'build-and-flash' });
-      return;
-    }
-
-    try {
-      const result = await keilApi.buildAndFlash();
-      this._json(res, 200, {
-        success: true,
-        data: {
-          stage: 'build-and-flash',
-          buildOk: true,
-          flashOk: true,
-          flasher: result.flasher,
-          artifactPath: result.artifactPath,
-          projectFile: result.projectFile,
-          target: result.target,
-        },
-      });
-    } catch (err: unknown) {
-      const mapped = this._mapKeilError(err, 'KEIL_BUILD_FLASH_FAILED');
-      this._jsonError(res, mapped.status, mapped.code, mapped.message, { stage: 'build-and-flash' });
-    }
-  }
-
-  private async _handleCustomRun(res: http.ServerResponse): Promise<void> {
-    const keilApi = this._ensureKeilApi(res);
-    if (!keilApi) { return; }
-    if (keilApi.isBusy()) {
-      this._jsonError(res, 409, 'KEIL_TASK_BUSY', 'Another Keil build/flash task is currently running', { stage: 'custom' });
-      return;
-    }
-
-    try {
-      const result = await keilApi.runCustomCommand();
-      this._json(res, 200, {
-        success: true,
-        data: {
-          stage: 'custom',
-          customOk: result.success,
-          preview: result.preview,
-          cwd: result.cwd,
-          exitCode: result.exitCode,
-        },
-      });
-    } catch (err: unknown) {
-      const mapped = this._mapKeilError(err, 'CUSTOM_COMMAND_FAILED');
-      this._jsonError(res, mapped.status, mapped.code, mapped.message, { stage: 'custom' });
-    }
   }
 }
