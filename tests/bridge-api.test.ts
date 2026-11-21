@@ -10,9 +10,9 @@
 
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
 import * as http from 'http';
-import { BridgeServer } from '../packages/serialagent-vscode/src/bridge-server';
+import { BridgeServer } from '../packages/serialagent-plus/src/bridge-server';
 import { MockSerialManager } from './mocks/mock-serial-manager';
-import { CustomCommandTaskResult, ILogger, IKeilApi, KeilConfigCheckResult, KeilTaskResult } from '../packages/serialagent-vscode/src/types';
+import { CustomCommandTaskResult, ILogger, IKeilApi, KeilConfigCheckResult, KeilTaskResult } from '../packages/serialagent-plus/src/types';
 
 // ---- 测试工具 ----
 

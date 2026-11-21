@@ -46,9 +46,9 @@ vi.mock('vscode', () => ({
 }));
 
 import {
-  updateSerialAgentSetting,
+  updateSerialAgentPlusSetting,
   upsertJsoncProperty,
-} from '../packages/serialagent-vscode/src/config-target';
+} from '../packages/serialagent-plus/src/config-target';
 
 describe('upsertJsoncProperty', () => {
   it('creates a settings object when the file is empty', () => {
@@ -87,14 +87,14 @@ describe('upsertJsoncProperty', () => {
   });
 });
 
-describe('updateSerialAgentSetting', () => {
+describe('updateSerialAgentPlusSetting', () => {
   beforeEach(() => {
     files.clear();
     updateConfigMock.mockReset();
   });
 
   it('writes workspace-scoped custom settings into .vscode/settings.json', async () => {
-    const target = await updateSerialAgentSetting('custom.mode', 'command');
+    const target = await updateSerialAgentPlusSetting('custom.mode', 'command');
     const settingsPath = path.join('D:/workspace', '.vscode', 'settings.json');
     const written = Buffer.from(files.get(settingsPath) || new Uint8Array()).toString('utf8');
 
@@ -106,7 +106,7 @@ describe('updateSerialAgentSetting', () => {
   it('keeps machine-scoped settings on the configuration API', async () => {
     updateConfigMock.mockResolvedValue(undefined);
 
-    const target = await updateSerialAgentSetting('keil.uv4Path', 'D:\\\\Keil\\\\UV4.exe');
+    const target = await updateSerialAgentPlusSetting('keil.uv4Path', 'D:\\\\Keil\\\\UV4.exe');
 
     expect(target).toBe(2);
     expect(updateConfigMock).toHaveBeenCalledWith('keil.uv4Path', 'D:\\\\Keil\\\\UV4.exe', 2);
@@ -118,7 +118,7 @@ describe('updateSerialAgentSetting', () => {
       new Error('Unable to write to User Settings because serialagent.custom.pythonPath is not a registered configuration.'),
     );
 
-    const target = await updateSerialAgentSetting('custom.pythonPath', 'C:\\Python\\python.exe');
+    const target = await updateSerialAgentPlusSetting('custom.pythonPath', 'C:\\Python\\python.exe');
     const settingsPath = path.join('D:/workspace', '.vscode', 'settings.json');
     const written = Buffer.from(files.get(settingsPath) || new Uint8Array()).toString('utf8');
 

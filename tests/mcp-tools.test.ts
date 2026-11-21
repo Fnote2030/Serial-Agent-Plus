@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import { z } from 'zod';
-import { registerTools } from '../packages/serialagent-mcp/src/index';
+import { registerTools } from '../packages/serialagent-plus-mcp/src/index';
 
 type ToolHandler = (args: any) => Promise<any>;
 

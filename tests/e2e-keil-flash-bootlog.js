@@ -38,11 +38,11 @@ function log(msg) {
 }
 
 function readBridgeConfig() {
-  const bridgePath = path.join(os.homedir(), '.serialagent', 'bridge.json');
+  const bridgePath = path.join(os.homedir(), '.serialagent-plus', 'bridge.json');
   if (!fs.existsSync(bridgePath)) {
     throw new Error(
       `Bridge discovery file not found: ${bridgePath}\n` +
-      'Please start VS Code with Serial Agent extension so Bridge Server is running.'
+      'Please start VS Code with Serial Agent Plus extension so Bridge Server is running.'
     );
   }
   return JSON.parse(fs.readFileSync(bridgePath, 'utf8'));

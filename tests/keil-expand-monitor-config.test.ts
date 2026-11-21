@@ -1,7 +1,7 @@
 import { readFileSync } from 'fs';
 import { join } from 'path';
 import { describe, expect, it } from 'vitest';
-import packageJson from '../packages/serialagent-vscode/package.json';
+import packageJson from '../packages/serialagent-plus/package.json';
 
 describe('keil.expandMonitorOnBuildFlash setting', () => {
   it('is contributed with default true', () => {
@@ -18,7 +18,7 @@ describe('keil.expandMonitorOnBuildFlash setting', () => {
 
   it('expands Serial Monitor for flash, build-and-flash, and custom command', () => {
     const source = readFileSync(
-      join(__dirname, '../packages/serialagent-vscode/src/extension.ts'),
+      join(__dirname, '../packages/serialagent-plus/src/extension.ts'),
       'utf8',
     );
 

@@ -59,7 +59,7 @@ vi.mock('child_process', () => ({
   spawnSync: spawnSyncMock,
 }));
 
-import { KeilToolchainService } from '../packages/serialagent-vscode/src/keil-toolchain';
+import { KeilToolchainService } from '../packages/serialagent-plus/src/keil-toolchain';
 
 function createOutput() {
   return {
@@ -359,7 +359,7 @@ describe('KeilToolchainService OpenOCD support', () => {
   it('normalizes Windows artifact paths before passing them to OpenOCD Tcl program command', async () => {
     const openocdExe = 'F:\\openocd\\bin\\openocd.exe';
     const projectFile = 'D:\\workspace\\demo.uvprojx';
-    const artifactPath = 'D:\\_Code\\__selfproject\\01-Serial Agent\\Serial Agent\\_KeilProject\\freertos_hello\\MDK-ARM\\freertos_hello\\freertos_hello.hex';
+    const artifactPath = 'D:\\_Code\\__selfproject\\01-Serial Agent Plus\\Serial Agent Plus\\_KeilProject\\freertos_hello\\MDK-ARM\\freertos_hello\\freertos_hello.hex';
 
     setConfig({
       'flash.method': 'openocd',

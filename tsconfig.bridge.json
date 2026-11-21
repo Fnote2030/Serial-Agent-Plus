@@ -13,7 +13,7 @@
   },
   "include": [
     "tests/test-bridge-real-hw.ts",
-    "packages/serialagent-vscode/src/bridge-server.ts",
-    "packages/serialagent-vscode/src/types.ts"
+    "packages/serialagent-plus/src/bridge-server.ts",
+    "packages/serialagent-plus/src/types.ts"
   ]
 }

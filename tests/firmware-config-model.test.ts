@@ -6,8 +6,8 @@ import {
   FIRMWARE_CONFIG_ROUTES,
   FirmwareConfigSnapshot,
   normalizeFirmwareConfigRoute,
-} from '../packages/serialagent-vscode/src/firmware-config-model';
-import { KeilConfigCheckResult } from '../packages/serialagent-vscode/src/types';
+} from '../packages/serialagent-plus/src/firmware-config-model';
+import { KeilConfigCheckResult } from '../packages/serialagent-plus/src/types';
 
 function createSnapshot(): FirmwareConfigSnapshot {
   return {
@@ -126,7 +126,7 @@ describe('normalizeFirmwareConfigRoute', () => {
 
   it('keeps the webview drawer switch aligned with every firmware config route', () => {
     const source = fs.readFileSync(
-      path.resolve('packages/serialagent-vscode/media/main.js'),
+      path.resolve('packages/serialagent-plus/media/main.js'),
       'utf8',
     );
     const start = source.indexOf('function normalizeFirmwareDrawerRoute');

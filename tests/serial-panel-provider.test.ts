@@ -20,7 +20,7 @@ vi.mock('vscode', () => ({
   },
 }));
 
-import { SerialPanelProvider } from '../packages/serialagent-vscode/src/serial-panel-provider';
+import { SerialPanelProvider } from '../packages/serialagent-plus/src/serial-panel-provider';
 
 function createProvider() {
   const context = {

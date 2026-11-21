@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { resolveKeilF7Command } from '../packages/serialagent-vscode/src/keil-f7-action';
+import { resolveKeilF7Command } from '../packages/serialagent-plus/src/keil-f7-action';
 
 describe('resolveKeilF7Command', () => {
   it('maps build to the keil build command', () => {

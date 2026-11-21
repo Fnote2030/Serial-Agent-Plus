@@ -8,9 +8,9 @@
  * 按 Ctrl+C 停止
  */
 
-import { BridgeServer } from '../packages/serialagent-vscode/src/bridge-server';
+import { BridgeServer } from '../packages/serialagent-plus/src/bridge-server';
 import { MockSerialManager } from './mocks/mock-serial-manager';
-import { ILogger } from '../packages/serialagent-vscode/src/types';
+import { ILogger } from '../packages/serialagent-plus/src/types';
 
 class ConsoleLogger implements ILogger {
   appendLine(value: string): void {
@@ -43,7 +43,7 @@ async function main() {
   await bridge.start();
 
   console.log('');
-  console.log('=== Serial Agent Bridge Server (Standalone Test) ===');
+  console.log('=== Serial Agent Plus Bridge Server (Standalone Test) ===');
   console.log(`Port:  127.0.0.1:${bridge.port}`);
   console.log(`Token: ${bridge.token}`);
   console.log('');

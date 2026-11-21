@@ -14,7 +14,7 @@ __Release/
 
 # IDE
 .vscode/
-!packages/serialagent-vscode/.vscode/
+!packages/serialagent-plus/.vscode/
 
 # OS
 .DS_Store
@@ -24,7 +24,7 @@ Thumbs.db
 *.tgz
 
 # VS Code Extension
-packages/serialagent-vscode/vsix-package-backup/
+packages/serialagent-plus/vsix-package-backup/
 
 # Keil Project - freertos_hello
 _KeilProject/freertos_hello/

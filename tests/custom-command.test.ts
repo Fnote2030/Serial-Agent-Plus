@@ -6,7 +6,7 @@ import {
   mapWindowsCodePageToEncoding,
   resolveCustomCommand,
   resolveCustomCommandOutputEncoding,
-} from '../packages/serialagent-vscode/src/custom-command';
+} from '../packages/serialagent-plus/src/custom-command';
 
 function posixResolve(...parts: string[]): string {
   return path.posix.resolve(...parts.map((part) => part.replace(/\\/g, '/')));
@@ -14,7 +14,7 @@ function posixResolve(...parts: string[]): string {
 
 describe('CustomCommandService.run', () => {
   it('rejects non-zero exit codes', async () => {
-    const { CustomCommandService } = await import('../packages/serialagent-vscode/src/custom-command');
+    const { CustomCommandService } = await import('../packages/serialagent-plus/src/custom-command');
     const workspaceRoot = path.resolve('/workspace');
     const python = path.resolve('/tools/python');
     const script = path.join(workspaceRoot, 'tools', 'flash.py');
@@ -111,7 +111,7 @@ describe('resolveCustomCommand', () => {
   });
 
   it('wraps a quoted .cmd path so cmd.exe /s /c can run it', () => {
-    const command = '"d:\\_Code\\Serial Agent\\_KeilProject\\freertos_hello\\Tool\\build-and-flash.cmd"';
+    const command = '"d:\\_Code\\Serial Agent Plus\\_KeilProject\\freertos_hello\\Tool\\build-and-flash.cmd"';
     const result = resolveCustomCommand({
       mode: 'command',
       pythonPath: '',

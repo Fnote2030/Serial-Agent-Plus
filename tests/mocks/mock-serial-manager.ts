@@ -2,7 +2,7 @@
  * Mock SerialManager — 模拟串口管理器的基本行为
  *
  * 用于 Bridge Server API 单元测试，替代真实的 SerialManager（无需真实串口硬件）。
- * 接口与 serialagent-vscode/src/extension.ts 中的 SerialManager 保持一致。
+ * 接口与 serialagent-plus/src/extension.ts 中的 SerialManager 保持一致。
  *
  * 使用方式：
  *   const mock = new MockSerialManager();
@@ -12,8 +12,8 @@
  * 对应 Plan.md S0.05
  */
 
-// 共享类型从 packages/serialagent-vscode/src/types.ts 导入
-import { PortInfo, SerialConfig, DEFAULT_CONFIG, ISerialManager } from '../../packages/serialagent-vscode/src/types';
+// 共享类型从 packages/serialagent-plus/src/types.ts 导入
+import { PortInfo, SerialConfig, DEFAULT_CONFIG, ISerialManager } from '../../packages/serialagent-plus/src/types';
 
 // 重新导出以保持向后兼容（已有测试文件可能从此处导入）
 export { PortInfo, SerialConfig, DEFAULT_CONFIG, ISerialManager };

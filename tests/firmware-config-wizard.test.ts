@@ -1,11 +1,11 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { showQuickPickMock, showOpenDialogMock, showInputBoxMock, showWarningMessageMock, updateSerialAgentSettingMock } = vi.hoisted(() => ({
+const { showQuickPickMock, showOpenDialogMock, showInputBoxMock, showWarningMessageMock, updateSerialAgentPlusSettingMock } = vi.hoisted(() => ({
   showQuickPickMock: vi.fn(),
   showOpenDialogMock: vi.fn(),
   showInputBoxMock: vi.fn(),
   showWarningMessageMock: vi.fn(),
-  updateSerialAgentSettingMock: vi.fn(),
+  updateSerialAgentPlusSettingMock: vi.fn(),
 }));
 
 vi.mock('vscode', () => ({
@@ -19,12 +19,12 @@ vi.mock('vscode', () => ({
   },
 }));
 
-vi.mock('../packages/serialagent-vscode/src/config-target', () => ({
-  updateSerialAgentSetting: updateSerialAgentSettingMock,
+vi.mock('../packages/serialagent-plus/src/config-target', () => ({
+  updateSerialAgentPlusSetting: updateSerialAgentPlusSettingMock,
 }));
 
-import { FirmwareConfigController } from '../packages/serialagent-vscode/src/firmware-config-wizard';
-import { FirmwareConfigSnapshot } from '../packages/serialagent-vscode/src/firmware-config-model';
+import { FirmwareConfigController } from '../packages/serialagent-plus/src/firmware-config-wizard';
+import { FirmwareConfigSnapshot } from '../packages/serialagent-plus/src/firmware-config-model';
 
 function createSnapshot(): FirmwareConfigSnapshot {
   return {
@@ -98,7 +98,7 @@ describe('FirmwareConfigController flasher selection', () => {
     showOpenDialogMock.mockReset();
     showInputBoxMock.mockReset();
     showWarningMessageMock.mockReset();
-    updateSerialAgentSettingMock.mockReset();
+    updateSerialAgentPlusSettingMock.mockReset();
   });
 
   it('updates flash.method and returns the JLink route when selecting the JLink flasher card action', async () => {
@@ -107,7 +107,7 @@ describe('FirmwareConfigController flasher selection', () => {
 
     const result = await controller.handleAction('selectJlinkFlasher');
 
-    expect(updateSerialAgentSettingMock).toHaveBeenCalledWith('flash.method', 'jlink');
+    expect(updateSerialAgentPlusSettingMock).toHaveBeenCalledWith('flash.method', 'jlink');
     expect(refreshState).toHaveBeenCalledTimes(1);
     expect(result).toEqual({ nextRoute: 'jlink' });
   });
@@ -118,7 +118,7 @@ describe('FirmwareConfigController flasher selection', () => {
 
     const result = await controller.handleAction('selectOpenOcdFlasher');
 
-    expect(updateSerialAgentSettingMock).toHaveBeenCalledWith('flash.method', 'openocd');
+    expect(updateSerialAgentPlusSettingMock).toHaveBeenCalledWith('flash.method', 'openocd');
     expect(refreshState).toHaveBeenCalledTimes(1);
     expect(result).toEqual({ nextRoute: 'openocd' });
   });
@@ -137,7 +137,7 @@ describe('FirmwareConfigController flasher selection', () => {
 
     await controller.handleAction('pickCustomMode');
 
-    expect(updateSerialAgentSettingMock).toHaveBeenCalledWith('custom.mode', 'command');
+    expect(updateSerialAgentPlusSettingMock).toHaveBeenCalledWith('custom.mode', 'command');
     expect(refreshState).toHaveBeenCalledTimes(1);
     expect(showQuickPickMock).toHaveBeenCalledTimes(2);
   });
@@ -153,12 +153,12 @@ describe('FirmwareConfigController flasher selection', () => {
 
     await controller.handleAction('pickCustomMode');
 
-    expect(updateSerialAgentSettingMock).toHaveBeenNthCalledWith(1, 'custom.mode', 'command');
+    expect(updateSerialAgentPlusSettingMock).toHaveBeenNthCalledWith(1, 'custom.mode', 'command');
     expect(showQuickPickMock.mock.calls[1][0]).toEqual(expect.arrayContaining([
       expect.objectContaining({ label: 'Paste command...', value: '__paste__' }),
       expect.objectContaining({ label: 'Browse executable...', value: '__browse__' }),
     ]));
-    expect(updateSerialAgentSettingMock).toHaveBeenNthCalledWith(2, 'custom.command', 'uv run python tools/flash.py');
+    expect(updateSerialAgentPlusSettingMock).toHaveBeenNthCalledWith(2, 'custom.command', 'uv run python tools/flash.py');
     expect(refreshState).toHaveBeenCalledTimes(2);
   });
 
@@ -175,7 +175,7 @@ describe('FirmwareConfigController flasher selection', () => {
       title: 'Custom: Command',
       value: '',
     }));
-    expect(updateSerialAgentSettingMock).toHaveBeenCalledWith('custom.command', 'echo hello');
+    expect(updateSerialAgentPlusSettingMock).toHaveBeenCalledWith('custom.command', 'echo hello');
   });
 
   it('lets Edit Command browse an executable and prefill a quoted path', async () => {
@@ -196,7 +196,7 @@ describe('FirmwareConfigController flasher selection', () => {
     expect(showInputBoxMock).toHaveBeenCalledWith(expect.objectContaining({
       value: '"C:\\Program Files\\tools\\flash.exe"',
     }));
-    expect(updateSerialAgentSettingMock).toHaveBeenCalledWith(
+    expect(updateSerialAgentPlusSettingMock).toHaveBeenCalledWith(
       'custom.command',
       '"C:\\Program Files\\tools\\flash.exe"',
     );
@@ -210,7 +210,7 @@ describe('FirmwareConfigController flasher selection', () => {
 
     const result = await controller.handleAction('pickFlashMethod');
 
-    expect(updateSerialAgentSettingMock).toHaveBeenCalledWith('flash.method', 'stlink');
+    expect(updateSerialAgentPlusSettingMock).toHaveBeenCalledWith('flash.method', 'stlink');
     expect(refreshState).toHaveBeenCalledTimes(1);
     expect(result).toEqual({ nextRoute: 'stlink' });
   });
@@ -247,7 +247,7 @@ describe('FirmwareConfigController flasher selection', () => {
     });
     expect(options).toMatchObject({
       title: 'Build: Project File',
-      placeHolder: 'Choose a .uvprojx / .uvproj directly, or choose a folder and let Serial Agent scan it for project files.',
+      placeHolder: 'Choose a .uvprojx / .uvproj directly, or choose a folder and let Serial Agent Plus scan it for project files.',
     });
   });
 
@@ -263,7 +263,7 @@ describe('FirmwareConfigController flasher selection', () => {
     await controller.handleAction('pickProjectFile');
 
     expect(toolchain.listProjectFilesInFolder).toHaveBeenCalledWith('D:/workspace/projects');
-    expect(updateSerialAgentSettingMock).toHaveBeenCalledWith('keil.projectFile', 'D:/workspace/projects/demo.uvprojx');
+    expect(updateSerialAgentPlusSettingMock).toHaveBeenCalledWith('keil.projectFile', 'D:/workspace/projects/demo.uvprojx');
     expect(refreshState).toHaveBeenCalledTimes(1);
   });
 
@@ -278,8 +278,8 @@ describe('FirmwareConfigController flasher selection', () => {
 
     await controller.handleAction('pickProjectFile');
 
-    expect(showWarningMessageMock).toHaveBeenCalledWith('[Serial Agent] No .uvprojx/.uvproj files were found in the selected folder.');
-    expect(updateSerialAgentSettingMock).not.toHaveBeenCalled();
+    expect(showWarningMessageMock).toHaveBeenCalledWith('[Serial Agent Plus] No .uvprojx/.uvproj files were found in the selected folder.');
+    expect(updateSerialAgentPlusSettingMock).not.toHaveBeenCalled();
     expect(refreshState).not.toHaveBeenCalled();
   });
 
@@ -310,7 +310,7 @@ describe('FirmwareConfigController flasher selection', () => {
         placeHolder: 'Choose the project file found under D:/workspace/projects.',
       }),
     );
-    expect(updateSerialAgentSettingMock).toHaveBeenCalledWith('keil.projectFile', 'D:/workspace/projects/app2.uvprojx');
+    expect(updateSerialAgentPlusSettingMock).toHaveBeenCalledWith('keil.projectFile', 'D:/workspace/projects/app2.uvprojx');
     expect(refreshState).toHaveBeenCalledTimes(1);
   });
 
@@ -328,7 +328,7 @@ describe('FirmwareConfigController flasher selection', () => {
       expect.arrayContaining([
         expect.objectContaining({
           label: 'Auto',
-          detail: 'Leave this empty to use Auto. Serial Agent will use the first target in demo.uvprojx, and you usually only need to choose one manually when the project has multiple targets.',
+          detail: 'Leave this empty to use Auto. Serial Agent Plus will use the first target in demo.uvprojx, and you usually only need to choose one manually when the project has multiple targets.',
           value: '__auto__',
         }),
       ]),
@@ -337,7 +337,7 @@ describe('FirmwareConfigController flasher selection', () => {
         placeHolder: 'Optional. Leave this empty to use Auto and build the first target from demo.uvprojx. Only choose one manually when the project has multiple targets.',
       }),
     );
-    expect(updateSerialAgentSettingMock).toHaveBeenCalledWith('keil.target', '');
+    expect(updateSerialAgentPlusSettingMock).toHaveBeenCalledWith('keil.target', '');
     expect(refreshState).toHaveBeenCalledTimes(1);
   });
 

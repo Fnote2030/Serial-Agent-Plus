@@ -1,8 +1,10 @@
-# Serial Agent
+# Serial Agent Plus
 
 English version: [README_EN.md](README_EN.md)
 
-`Serial Agent` 是一个面向嵌入式串口调试与闭环验证场景的 AI 平台。它把 VS Code 插件、MCP 和 Skill 串成一条可复用的工作流，让你能把“看日志、发命令、分析问题、在需要时执行固件动作”交给 AI 和开发者协同完成。
+> **声明**：本项目 **Serial Agent Plus** 是 [Rance-OwO/Serial-Agent](https://github.com/Rance-OwO/Serial-Agent) 的非官方衍生版（fork），主要增强串口功能。原始项目版权归原作者所有；本仓库保留上游 MIT 许可证与原始版权声明，仅对发布标识做了区分。
+
+`Serial Agent Plus` 是一个面向嵌入式串口调试与闭环验证场景的 AI 平台。它把 VS Code 插件、MCP 和 Skill 串成一条可复用的工作流，让你能把“看日志、发命令、分析问题、在需要时执行固件动作”交给 AI 和开发者协同完成。
 
 ## 这个项目能做到什么
 
@@ -13,15 +15,15 @@ English version: [README_EN.md](README_EN.md)
 
 ## 三步快速上手
 
-### 第一步：安装 VS Code 插件 `Serial Agent`
+### 第一步：安装 VS Code 插件 `Serial Agent Plus`
 
-先安装 VS Code 插件 `Serial Agent`。这是整条本地调试链路的运行时入口。
+先安装 VS Code 插件 `Serial Agent Plus`。这是整条本地调试链路的运行时入口。
 
 ![VS Code 插件安装](assets/vscode插件安装.png)
 
 插件文档：
 
-- [packages/serialagent-vscode/README.md](packages/serialagent-vscode/README.md)
+- [packages/serialagent-plus/README.md](packages/serialagent-plus/README.md)
 
 ### 第二步：给 AI Agent 配置 MCP
 
@@ -31,11 +33,11 @@ English version: [README_EN.md](README_EN.md)
 如果你习惯让 AI 自己完成配置，也可以直接把下面这段提示词发给 AI：
 
 ```text
-Hi，请帮我配置一个 MCP。MCP 的显示名称是 serial-agent-mcp，完整的 JSON 格式如下：
+Hi，请帮我配置一个 MCP。MCP 的显示名称是 serialagent-plus-mcp，完整的 JSON 格式如下：
 {
   "args": [
     "-y",
-    "@ranceowo/serial-agent-mcp"
+    "@fnote2030/serialagent-plus-mcp"
   ],
   "command": "npx",
   "startup_timeout_sec": 15,
@@ -45,18 +47,18 @@ Hi，请帮我配置一个 MCP。MCP 的显示名称是 serial-agent-mcp，完�
 
 说明：
 
-- 这是 `Serial Agent MCP`
-- 它需要配合 VS Code 插件 `Serial Agent` 和本地 Bridge 一起使用
+- 这是 `Serial Agent Plus MCP`
+- 它需要配合 VS Code 插件 `Serial Agent Plus` 和本地 Bridge 一起使用
 
 MCP 文档：
 
-- [packages/serialagent-mcp/README.md](packages/serialagent-mcp/README.md)
+- [packages/serialagent-plus-mcp/README.md](packages/serialagent-plus-mcp/README.md)
 
 ### 第三步：把 Skill 喂给 AI
 
 把这个 Skill 文件喂给 AI：
 
-- [packages/serialagent-skill/SKILL.md](packages/serialagent-skill/SKILL.md)
+- [packages/serialagent-plus-skill/SKILL.md](packages/serialagent-plus-skill/SKILL.md)
 
 推荐做法：
 
@@ -71,9 +73,9 @@ MCP 文档：
 
 ```text
 AI IDE / Agent Client
-    -> Serial Agent MCP
+    -> Serial Agent Plus MCP
     -> Local Bridge
-    -> Serial Agent VS Code Extension
+    -> Serial Agent Plus VS Code Extension
     -> Serial Device / Firmware Toolchain
 ```
 
@@ -89,11 +91,11 @@ AI IDE / Agent Client
 
 当前仓库会从同一个源码仓发布 3 个强关联交付物：
 
-1. `Serial Agent` VS Code 插件
-2. `Serial Agent MCP`
-3. `Serial Agent Skill`
+1. `Serial Agent Plus` VS Code 插件
+2. `Serial Agent Plus MCP`
+3. `Serial Agent Plus Skill`
 
-### 1. Serial Agent
+### 1. Serial Agent Plus
 
 这是主产品，也就是 VS Code 插件。它负责：
 
@@ -104,39 +106,39 @@ AI IDE / Agent Client
 
 源码：
 
-- [packages/serialagent-vscode](packages/serialagent-vscode)
+- [packages/serialagent-plus](packages/serialagent-plus)
 
 文档：
 
-- [packages/serialagent-vscode/README.md](packages/serialagent-vscode/README.md)
+- [packages/serialagent-plus/README.md](packages/serialagent-plus/README.md)
 
-### 2. Serial Agent MCP
+### 2. Serial Agent Plus MCP
 
 这是 AI 集成层。它通过 MCP 对外暴露串口和固件工具，并把调用转发给本地 Bridge。
 
 源码：
 
-- [packages/serialagent-mcp](packages/serialagent-mcp)
+- [packages/serialagent-plus-mcp](packages/serialagent-plus-mcp)
 
 文档：
 
-- [packages/serialagent-mcp/README.md](packages/serialagent-mcp/README.md)
+- [packages/serialagent-plus-mcp/README.md](packages/serialagent-plus-mcp/README.md)
 
-### 3. Serial Agent Skill
+### 3. Serial Agent Plus Skill
 
 这是工作流增强层。它帮助 AI 或代理判断当前任务属于只读检查、开环串口操作还是闭环固件验证，并更稳定地使用插件和 MCP，但它本身不是运行时。
 
 源码：
 
-- [packages/serialagent-skill](packages/serialagent-skill)
+- [packages/serialagent-plus-skill](packages/serialagent-plus-skill)
 
 文档：
 
-- [packages/serialagent-skill/README.md](packages/serialagent-skill/README.md)
+- [packages/serialagent-plus-skill/README.md](packages/serialagent-plus-skill/README.md)
 
 ## 为什么是 3 个交付物，但仍然保留 1 个源码仓
 
-`Serial Agent` 需要同时服务三种使用方式：
+`Serial Agent Plus` 需要同时服务三种使用方式：
 
 - 开发者直接在 VS Code 中使用串口工作台
 - AI Agent通过 MCP 调用串口和固件能力
@@ -152,9 +154,9 @@ AI IDE / Agent Client
 
 ```text
 packages/
-  serialagent-vscode/
-  serialagent-mcp/
-  serialagent-skill/
+  serialagent-plus/
+  serialagent-plus-mcp/
+  serialagent-plus-skill/
 docs/
 tests/
 ```
@@ -171,9 +173,9 @@ npm install
 
 ```bash
 npm test
-npm --workspace packages/serialagent-vscode run build
-npm --workspace packages/serialagent-vscode run pack
-npm --workspace packages/serialagent-mcp run build
+npm --workspace packages/serialagent-plus run build
+npm --workspace packages/serialagent-plus run pack
+npm --workspace packages/serialagent-plus-mcp run build
 ```
 
 ## 维护者文档

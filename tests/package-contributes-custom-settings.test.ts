@@ -2,10 +2,10 @@ import { readFileSync } from 'fs';
 import path from 'path';
 import { describe, expect, it } from 'vitest';
 
-describe('Serial Agent custom command contributions', () => {
+describe('Serial Agent Plus custom command contributions', () => {
   it('registers serialagent.custom.* settings in package.json', () => {
     const manifest = JSON.parse(readFileSync(
-      path.resolve(__dirname, '../packages/serialagent-vscode/package.json'),
+      path.resolve(__dirname, '../packages/serialagent-plus/package.json'),
       'utf8',
     )) as {
       contributes: {

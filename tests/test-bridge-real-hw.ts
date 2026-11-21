@@ -14,12 +14,12 @@
 
 import { createRequire } from 'module';
 import * as path from 'path';
-import { BridgeServer } from '../packages/serialagent-vscode/src/bridge-server';
-import { ISerialManager, ILogger, SerialConfig, PortInfo, DEFAULT_CONFIG } from '../packages/serialagent-vscode/src/types';
+import { BridgeServer } from '../packages/serialagent-plus/src/bridge-server';
+import { ISerialManager, ILogger, SerialConfig, PortInfo, DEFAULT_CONFIG } from '../packages/serialagent-plus/src/types';
 
-// serialport 安装在 packages/serialagent-vscode 中，需从该路径解析
+// serialport 安装在 packages/serialagent-plus 中，需从该路径解析
 // 使用 process.cwd() 而非 __dirname，确保预编译后路径仍正确
-const vscodeRequire = createRequire(path.resolve(process.cwd(), 'packages/serialagent-vscode/package.json'));
+const vscodeRequire = createRequire(path.resolve(process.cwd(), 'packages/serialagent-plus/package.json'));
 const { SerialPort } = vscodeRequire('serialport') as any;
 
 // ============================================================
@@ -201,7 +201,7 @@ async function main() {
   await bridge.start();
 
   console.log('');
-  console.log('=== Serial Agent Bridge Server (Real Hardware) ===');
+  console.log('=== Serial Agent Plus Bridge Server (Real Hardware) ===');
   console.log(`Port:  127.0.0.1:${bridge.port}`);
   console.log(`Token: ${bridge.token}`);
   console.log('');
