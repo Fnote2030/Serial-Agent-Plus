@@ -307,6 +307,9 @@ export class SerialPanelProvider implements vscode.WebviewViewProvider, vscode.D
             showTimestamp: currentCfg.showTimestamp,
             hexMode: currentCfg.hexMode,
             encoding: currentCfg.encoding,
+            rxIdleWrapMs: typeof data.rxIdleWrapMs === 'number' && data.rxIdleWrapMs >= 1
+              ? Math.floor(data.rxIdleWrapMs)
+              : currentCfg.rxIdleWrapMs,
           };
           this._saveConfig(config);
           await this._serialManager.connect(config);
@@ -341,6 +344,9 @@ export class SerialPanelProvider implements vscode.WebviewViewProvider, vscode.D
           if (data.hexMode !== undefined) { partial.hexMode = data.hexMode; }
           if (data.lineEnding !== undefined) { partial.lineEnding = data.lineEnding; }
           if (data.encoding !== undefined) { partial.encoding = data.encoding === 'gbk' ? 'gbk' : 'utf8'; }
+          if (data.rxIdleWrapMs !== undefined) {
+            partial.rxIdleWrapMs = Math.max(1, Math.min(60000, Math.floor(Number(data.rxIdleWrapMs) || 20)));
+          }
           if (data.flowControl !== undefined) { partial.flowControl = this._normalizeFlowControl(data.flowControl); }
           this._serialManager.updateSettings(partial);
           this._saveConfig(partial);
@@ -446,7 +452,7 @@ export class SerialPanelProvider implements vscode.WebviewViewProvider, vscode.D
       <span id="rx-count" class="counter" title="Received bytes">RX: 0</span>
       <span id="tx-count" class="counter" title="Sent bytes">TX: 0</span>
       <button id="btn-config-toggle" class="status-action-btn" type="button" title="Toggle serial port settings" aria-expanded="false">
-        <span class="codicon codicon-settings-gear" aria-hidden="true"></span>Config
+        <span class="config-toggle-icon" aria-hidden="true"></span>Config
       </button>
       <button id="btn-monitor-connect" class="status-action-btn status-action-primary" type="button" title="Toggle serial connection">Open</button>
     </div>
@@ -537,6 +543,11 @@ export class SerialPanelProvider implements vscode.WebviewViewProvider, vscode.D
       <label class="option-item" title="Follow the latest log lines automatically">
         <input type="checkbox" id="opt-auto-scroll" checked />
         <span>Auto Scroll</span>
+      </label>
+      <label class="option-item send-ending-option" title="HEX display: wrap into a new line when the inter-byte gap exceeds this many ms (text display always waits for CR/LF)">
+        <span>Wrap</span>
+        <input id="rx-idle-wrap-input" class="periodic-interval-input" type="number" min="1" step="1" value="20" />
+        <span>ms</span>
       </label>
       <label class="option-item send-ending-option" title="Text encoding for RX log decode and TX encode">
         <span>Encoding</span>

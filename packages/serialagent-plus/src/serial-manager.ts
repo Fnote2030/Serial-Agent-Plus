@@ -69,6 +69,10 @@ export class SerialManager implements SerialRuntime {
   private _rxBuffer: Buffer = Buffer.alloc(0);
   private _config: SerialConfig = { ...DEFAULT_CONFIG };
   private _rxFlushTimer: ReturnType<typeof setTimeout> | null = null;
+  private _rxWrapTimer: ReturnType<typeof setTimeout> | null = null;
+  // HEX 空闲换行的累积状态（文本模式不换行，保持实时行）
+  private _hexPending = '';
+  private _hexSentLen = 0;
 
   private _rxBytes = 0;
   private _txBytes = 0;
@@ -235,13 +239,27 @@ export class SerialManager implements SerialRuntime {
   }
 
   updateSettings(partial: Partial<SerialConfig>): void {
-    if (partial.hexMode === true && !this._config.hexMode && this._rxBuffer.length > 0) {
-      const remaining = decodeSerialText(this._rxBuffer, this._config.encoding);
-      if (remaining.length > 0) {
-        this._logBuffer.push(remaining);
-        this._onLog?.(remaining + '\n');
+    if (partial.hexMode === true && !this._config.hexMode) {
+      // 文本 → HEX：先按文本提交未完行
+      this._clearRxWrap();
+      if (this._rxBuffer.length > 0) {
+        this._flushPendingRx();
+        const flushed = this._logBuffer[this._logBuffer.length - 1] ?? '';
+        if (flushed) {
+          this._logBuffer.pop();
+          this._commitWrappedLine(flushed);
+        }
       }
-      this._rxBuffer = Buffer.alloc(0);
+    } else if (partial.hexMode === false && this._config.hexMode) {
+      // HEX → 文本：提交累积的 HEX 行
+      this._clearRxWrap();
+      this._clearRxPartialFlush();
+      if (this._hexPending) {
+        const line = this._hexPending;
+        this._hexPending = '';
+        this._hexSentLen = 0;
+        this._commitWrappedLine(line);
+      }
     }
     Object.assign(this._config, partial);
   }
@@ -299,15 +317,16 @@ export class SerialManager implements SerialRuntime {
 
   private _processReceivedData(chunk: Buffer): void {
     if (this._config.hexMode) {
-      const hex = Array.from(chunk)
-        .map((byte) => byte.toString(16).padStart(2, '0').toUpperCase())
-        .join(' ');
-
-      let line = hex;
-      if (this._config.showTimestamp) {
-        line = `${this._createLogTimestamp()} ${hex}`;
+      // HEX 模式：字节累积到当前行，空闲超过 rxIdleWrapMs 才换行提交，
+      // 20ms 部分刷新先行送出增量（webview 实时行 / MCP 订阅可见）
+      if (chunk.length > 0) {
+        const hex = Array.from(chunk)
+          .map((byte) => byte.toString(16).padStart(2, '0').toUpperCase())
+          .join(' ');
+        this._hexPending = this._hexPending ? `${this._hexPending} ${hex}` : hex;
       }
-      this._appendLogLine(line);
+      this._scheduleRxPartialFlush();
+      this._scheduleRxWrap();
       return;
     }
 
@@ -343,8 +362,11 @@ export class SerialManager implements SerialRuntime {
     }
 
     // Everything drained by complete lines - cancel the pending partial flush.
+    // 文本模式不做空闲换行：无 \r\n 的数据（提示符/回显/redraw）一直留在实时行，
+    // 只有 HEX 显示模式使用 rxIdleWrapMs 空闲换行。
     if (this._rxBuffer.length === 0) {
       this._clearRxPartialFlush();
+      this._clearRxWrap();
     }
   }
 
@@ -360,13 +382,74 @@ export class SerialManager implements SerialRuntime {
     }
   }
 
+  private _scheduleRxWrap(): void {
+    if (this._rxWrapTimer) { clearTimeout(this._rxWrapTimer); }
+    this._rxWrapTimer = setTimeout(() => this._wrapPendingRx(), this._idleWrapMs());
+  }
+
+  private _clearRxWrap(): void {
+    if (this._rxWrapTimer) {
+      clearTimeout(this._rxWrapTimer);
+      this._rxWrapTimer = null;
+    }
+  }
+
+  private _idleWrapMs(): number {
+    return Math.max(1, Math.floor(this._config.rxIdleWrapMs) || 20);
+  }
+
   /** 分发缓冲中的未完行（无换行结尾）：webview 将其保留在实时显示行中继续拼接 */
   private _flushPendingRx(): void {
     this._rxFlushTimer = null;
+    if (this._config.hexMode) {
+      if (this._hexPending.length > this._hexSentLen) {
+        const delta = this._hexPending.slice(this._hexSentLen);
+        this._hexSentLen = this._hexPending.length;
+        this._appendPartialLine(delta);
+      }
+      return;
+    }
     if (this._rxBuffer.length === 0) { return; }
     const text = decodeSerialText(this._rxBuffer, this._config.encoding);
     this._rxBuffer = Buffer.alloc(0);
     this._appendPartialLine(text);
+  }
+
+  /**
+   * 空闲换行（仅 HEX 显示模式）：字节间隔超过 rxIdleWrapMs 时提交当前 HEX 行。
+   * 文本模式不适用——无 \r\n 的行（提示符/回显）需保持实时显示。
+   */
+  private _wrapPendingRx(): void {
+    this._rxWrapTimer = null;
+    this._flushPendingRx(); // 先送出剩余增量，保证 webview 实时行完整
+    if (this._config.hexMode && this._hexPending) {
+      const line = this._hexPending;
+      this._hexPending = '';
+      this._hexSentLen = 0;
+      this._commitWrappedLine(line);
+    }
+  }
+
+  /** 提交一条空闲换行行：合并此前 partial 刷入的尾部缓冲条目，避免日志重复 */
+  private _commitWrappedLine(line: string): void {
+    // 尾部 partial 条目逐条拼接应恰为该行：替换为带时间戳的完整行
+    let merged = '';
+    let removeCount = 0;
+    for (let i = this._logBuffer.length - 1; i >= 0 && merged.length < line.length; i--) {
+      merged = this._logBuffer[i] + merged;
+      removeCount++;
+    }
+    if (merged === line) {
+      this._logBuffer.splice(this._logBuffer.length - removeCount, removeCount);
+    }
+    const tsLine = this._config.showTimestamp ? `${this._createLogTimestamp()} ${line}` : line;
+    this._logBuffer.push(tsLine);
+    if (this._logBuffer.length > MAX_LOG_LINES) { this._logBuffer.shift(); }
+    // webview 已通过 partial 收到全部文本，仅补一个换行提交显示行
+    this._onLog?.('\n');
+    for (const callback of this._newLogSubscribers) {
+      callback(tsLine);
+    }
   }
 
   private _appendPartialLine(text: string): void {
@@ -381,6 +464,9 @@ export class SerialManager implements SerialRuntime {
 
   private _cleanupPort(): void {
     this._clearRxPartialFlush();
+    this._clearRxWrap();
+    this._hexPending = '';
+    this._hexSentLen = 0;
     if (this._port) {
       this._port.removeAllListeners();
       this._port = null;

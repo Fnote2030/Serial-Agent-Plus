@@ -40,6 +40,8 @@ export interface SerialConfig {
   showTimestamp: boolean;
   hexMode: boolean;
   encoding: SerialEncoding;
+  /** HEX 显示模式的空闲换行阈值：字节间隔超过该毫秒数即提交为一行（文本模式不换行） */
+  rxIdleWrapMs: number;
 }
 
 export const DEFAULT_CONFIG: SerialConfig = {
@@ -53,6 +55,7 @@ export const DEFAULT_CONFIG: SerialConfig = {
   showTimestamp: false,
   hexMode: false,
   encoding: 'utf8',
+  rxIdleWrapMs: 20,
 };
 
 /**

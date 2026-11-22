@@ -60,6 +60,7 @@
   const lineEndingSelect = /** @type {HTMLSelectElement} */ (document.getElementById('line-ending-select'));
   /** @type {HTMLSelectElement | null} */
   const encodingSelect = /** @type {HTMLSelectElement} */ (document.getElementById('encoding-select'));
+  const rxIdleWrapInput = /** @type {HTMLInputElement} */ (document.getElementById('rx-idle-wrap-input'));
 
   const refreshBtn = document.getElementById('btn-refresh');
   const clearBtn = document.getElementById('btn-clear');
@@ -223,6 +224,7 @@
     configToggleBtn?.addEventListener('click', () => {
       const collapsed = configDrawer?.classList.toggle('hidden');
       if (configToggleBtn) {
+        // aria-expanded 驱动 .config-toggle-icon 的 ▸/▾ 两态（纯 CSS）
         configToggleBtn.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
       }
     });
@@ -230,6 +232,11 @@
     logArea?.addEventListener('keydown', (event) => {
       const key = event.key;
       if (event.ctrlKey && !event.altKey && !event.metaKey && (key === 'c' || key === 'C')) {
+        // 有选中文本时放行系统复制，仅在无选中时向设备发送 ^C 中断
+        const selection = document.getSelection();
+        if (selection && !selection.isCollapsed) {
+          return;
+        }
         event.preventDefault();
         terminalBuffer = '';
         terminalCaret = 0;
@@ -380,6 +387,12 @@
       vscode.postMessage({ type: 'updateSettings', encoding: encodingSelect.value });
     });
 
+    rxIdleWrapInput?.addEventListener('change', () => {
+      const value = Math.max(1, Math.min(60000, parseInt(rxIdleWrapInput.value, 10) || 20));
+      rxIdleWrapInput.value = String(value);
+      vscode.postMessage({ type: 'updateSettings', rxIdleWrapMs: value });
+    });
+
     [
       portSelect,
       baudrateInput,
@@ -443,7 +456,7 @@
       frozenLog = !frozenLog;
       updateFreezeButton();
       if (!frozenLog) {
-        renderLogArea();
+        renderLogArea(true); // 解冻：强制刷新，补上冻结期间累积的日志
       }
       saveState();
     });
@@ -451,7 +464,7 @@
     clearBtn?.addEventListener('click', () => {
       vscode.postMessage({ type: 'clearLog' });
       logEntries = [];
-      renderLogArea();
+      renderLogArea(true);
     });
 
     copyLogBtn?.addEventListener('click', async () => {
@@ -901,11 +914,12 @@
       showTimestamp: !!optTimestamp?.checked,
       hexMode: !!optHex?.checked,
       encoding: encodingSelect?.value || 'utf8',
+      rxIdleWrapMs: Math.max(1, parseInt(rxIdleWrapInput?.value || '20', 10) || 20),
     };
   }
 
   /**
-   * @param {{ port: string; baudRate: number; dataBits: number; parity: string; stopBits: number; flowControl?: string; lineEnding: string; showTimestamp: boolean; hexMode: boolean; encoding?: string }} config
+   * @param {{ port: string; baudRate: number; dataBits: number; parity: string; stopBits: number; flowControl?: string; lineEnding: string; showTimestamp: boolean; hexMode: boolean; encoding?: string; rxIdleWrapMs?: number }} config
    */
   function applyConfigToInputs(config) {
     if (portSelect) { portSelect.value = config.port || ''; }
@@ -918,6 +932,7 @@
     if (optTimestamp) { optTimestamp.checked = !!config.showTimestamp; }
     if (optHex) { optHex.checked = !!config.hexMode; }
     if (encodingSelect) { encodingSelect.value = config.encoding === 'gbk' ? 'gbk' : 'utf8'; }
+    if (rxIdleWrapInput) { rxIdleWrapInput.value = String(config.rxIdleWrapMs || 20); }
     syncBaudratePreset();
     updateMonitorConfigChips();
   }
@@ -1125,16 +1140,27 @@
     if (logEntries.length > MAX_RENDER_ENTRIES) {
       logEntries = logEntries.slice(logEntries.length - MAX_RENDER_ENTRIES);
     }
-
-    if (!frozenLog) {
-      renderLogArea();
-    } else {
-      updateEmptyState();
-    }
+    renderLogArea(); // 冻结/选中时内部自动跳过
   }
 
-  function renderLogArea() {
+  /** 日志区内是否有未收起的文本选区（innerHTML 重建会摧毁选区） */
+  function logAreaHasSelection() {
+    const selection = document.getSelection();
+    if (!selection || selection.isCollapsed || selection.rangeCount === 0) {
+      return false;
+    }
+    const anchor = selection.anchorNode;
+    const focus = selection.focusNode;
+    return !!logArea && !!anchor && !!focus && logArea.contains(anchor) && logArea.contains(focus);
+  }
+
+  function renderLogArea(force) {
     if (!logArea) {
+      return;
+    }
+    // 冻结或正在选中日志文本时跳过重建：冻结应完全停住视图（数据仍持续累积，
+    // 解冻后一次性刷新）；选中期间重建会丢失选区，导致 Ctrl+C 复制不到内容
+    if (!force && (frozenLog || logAreaHasSelection())) {
       return;
     }
 
@@ -1345,7 +1371,7 @@
         historySync = false;
         terminalDeviceLine = null;
         clearSyncTimers();
-        renderLogArea();
+        renderLogArea(true);
         if (rxCountEl) { rxCountEl.textContent = 'RX: 0'; }
         if (txCountEl) { txCountEl.textContent = 'TX: 0'; }
         break;
