@@ -367,6 +367,7 @@ export class BridgeServer {
       showTimestamp: this._serialManager.config.showTimestamp,
       hexMode: this._serialManager.config.hexMode,
       rxIdleWrapMs: this._serialManager.config.rxIdleWrapMs,
+      logBufferKB: this._serialManager.config.logBufferKB,
       encoding: this._serialManager.config.encoding,
     };
     const ok = await this._serialManager.connect(config);

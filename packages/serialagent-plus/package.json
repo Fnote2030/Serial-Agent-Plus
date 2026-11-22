@@ -119,6 +119,14 @@
           "minimum": 5000,
           "scope": "machine",
           "markdownDescription": "On Windows, how often to refresh friendly port names via PowerShell. Port add/remove is still detected at the faster polling interval."
+        },
+        "serialagent.logBufferKB": {
+          "type": "number",
+          "default": 1024,
+          "minimum": 1,
+          "maximum": 10240,
+          "scope": "machine",
+          "markdownDescription": "Log buffer cap in KB (total UTF-8 bytes, oldest lines dropped first). Shared by the log view and the extension log buffer used by Save Log / MCP `read_serial_log`."
         }
       }
     },

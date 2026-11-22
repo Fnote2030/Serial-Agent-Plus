@@ -18,7 +18,15 @@
   const TerminalDeviceLine = globalThis.TerminalDeviceLine;
 
   const MAX_HISTORY = 20;
-  const MAX_RENDER_ENTRIES = 5000;
+  // 显示缓冲上限按 UTF-8 总字节数限制，大小来自后台配置项 serialagent.logBufferKB
+  // （默认 1024=1MB，最大 10240=10MB），由扩展侧推送（restoreConfig / updateLogBuffer）
+  let logBufferKB = 1024;
+  const utf8Encoder = new TextEncoder();
+  const utf8ByteLength = (text) => utf8Encoder.encode(text).length;
+
+  function logRenderBytesLimit() {
+    return Math.max(1, Math.min(10240, logBufferKB)) * 1024;
+  }
   const DEFAULT_NORMAL_SEND_HEIGHT = 38;
 
   /**
@@ -118,6 +126,7 @@
   let editingQuickCommandId = '';
   let frozenLog = false;
   let logEntries = /** @type {LogEntry[]} */ ([]);
+  let logEntriesBytes = 0;
   let activeLogFilter = '';
   let normalSendHeight;
   let periodicTimer = null;
@@ -464,6 +473,7 @@
     clearBtn?.addEventListener('click', () => {
       vscode.postMessage({ type: 'clearLog' });
       logEntries = [];
+      logEntriesBytes = 0;
       renderLogArea(true);
     });
 
@@ -933,6 +943,9 @@
     if (optHex) { optHex.checked = !!config.hexMode; }
     if (encodingSelect) { encodingSelect.value = config.encoding === 'gbk' ? 'gbk' : 'utf8'; }
     if (rxIdleWrapInput) { rxIdleWrapInput.value = String(config.rxIdleWrapMs || 20); }
+    if (typeof config.logBufferKB === 'number') {
+      logBufferKB = Math.max(1, Math.min(10240, Math.floor(config.logBufferKB) || 1024));
+    }
     syncBaudratePreset();
     updateMonitorConfigChips();
   }
@@ -1137,8 +1150,11 @@
 
   function appendLogEntry(text, kind) {
     logEntries.push({ text, kind });
-    if (logEntries.length > MAX_RENDER_ENTRIES) {
-      logEntries = logEntries.slice(logEntries.length - MAX_RENDER_ENTRIES);
+    logEntriesBytes += utf8ByteLength(text);
+    // 总字节数上限（Buffer KB 配置），从最旧端丢弃（至少保留最新一条）
+    while (logEntries.length > 1 && logEntriesBytes > logRenderBytesLimit()) {
+      logEntriesBytes -= utf8ByteLength(logEntries[0].text);
+      logEntries.shift();
     }
     renderLogArea(); // 冻结/选中时内部自动跳过
   }
@@ -1336,7 +1352,8 @@
         if (connected && pendingTerminalLine !== null) {
           const bytes = pendingTerminalLine;
           pendingTerminalLine = null;
-          vscode.postMessage({ type: 'sendData', text: bytes, hexSend: false });
+          // 终端字节自带行尾，与立即发送路径一致显式 none，避免 End 选项追加换行
+          vscode.postMessage({ type: 'sendData', text: bytes, hexSend: false, lineEnding: 'none' });
         }
         updateSendControlsDisabled();
         updateEmptyState();
@@ -1348,6 +1365,7 @@
         // ANSI clear screen (device response to commands like `clear`)
         if (/\u001b\[2J/.test(raw)) {
           logEntries = [];
+          logEntriesBytes = 0;
           rxSim.reset();
         }
         // 只剥 OSC（窗口标题等）；CSI 序列保留给行模拟器按语义应用——
@@ -1364,6 +1382,7 @@
 
       case 'clearLog': {
         logEntries = [];
+        logEntriesBytes = 0;
         rxSim.reset();
         terminalBuffer = '';
         terminalCaret = 0;
@@ -1374,6 +1393,14 @@
         renderLogArea(true);
         if (rxCountEl) { rxCountEl.textContent = 'RX: 0'; }
         if (txCountEl) { txCountEl.textContent = 'TX: 0'; }
+        break;
+      }
+
+      case 'updateLogBuffer': {
+        // 后台配置项 serialagent.logBufferKB 变化时由扩展推送
+        if (typeof message.logBufferKB === 'number') {
+          logBufferKB = Math.max(1, Math.min(10240, Math.floor(message.logBufferKB) || 1024));
+        }
         break;
       }
 

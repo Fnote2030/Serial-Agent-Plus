@@ -47,6 +47,40 @@ describe('SerialManager RX timestamp routing', () => {
   });
 });
 
+describe('SerialManager log buffer byte cap (logBufferKB)', () => {
+  let manager: SerialManager;
+
+  beforeEach(() => {
+    manager = new SerialManager();
+    manager.setCallbacks({ onLog: () => {}, onStatus: () => {}, onError: () => {} });
+  });
+
+  afterEach(() => {
+    (manager as any)._clearRxPartialFlush();
+    (manager as any)._clearRxWrap();
+  });
+
+  it('drops the oldest lines once the total exceeds the configured KB budget', () => {
+    manager.updateSettings({ logBufferKB: 1 }); // 1KB
+    manager.injectLog('a'.repeat(600));
+    manager.injectLog('b'.repeat(600));
+    manager.injectLog('c'.repeat(600));
+
+    const buffer = manager.getLogBuffer();
+    expect(buffer).toHaveLength(1); // 1200B > 1024B，仅保留最新一条
+    expect(buffer[0].startsWith('c')).toBe(true);
+  });
+
+  it('retains more history when the KB budget is larger', () => {
+    manager.updateSettings({ logBufferKB: 2 }); // 2KB
+    manager.injectLog('a'.repeat(600));
+    manager.injectLog('b'.repeat(600));
+    manager.injectLog('c'.repeat(600));
+
+    expect(manager.getLogBuffer()).toHaveLength(3); // 1800B ≤ 2048B
+  });
+});
+
 describe('SerialManager idle-gap line wrap (rxIdleWrapMs)', () => {
   let manager: SerialManager;
   let webviewLines: string[];
@@ -110,6 +144,24 @@ describe('SerialManager idle-gap line wrap (rxIdleWrapMs)', () => {
 
     expect(webviewLines).toEqual(['AA', '\n']);
     expect(manager.getLogBuffer()[0]).toMatch(/AA$/);
+  });
+
+  it('HEX mode: forces a wrap commit when a single line exceeds the 1MB guard', () => {
+    // 缓冲预算调大到 10MB，避免 1.2MB 的强制换行行本身被日志字节上限逐出
+    manager.updateSettings({ hexMode: true, logBufferKB: 10240 });
+    // 400000 字节 → hex 字符串约 1.2MB，超过单行保护上限，立即强制提交
+    (manager as any)._processReceivedData(Buffer.alloc(400_000, 0x55));
+
+    // 增量已送出且换行已提交（无需等待空闲定时器）
+    expect(webviewLines[webviewLines.length - 1]).toBe('\n');
+    const buffer = manager.getLogBuffer();
+    expect(buffer).toHaveLength(1);
+    expect(buffer[0].endsWith('55')).toBe(true);
+    // 提交后累积状态清零，后续字节进入新行
+    (manager as any)._processReceivedData(Buffer.from([0x01]));
+    vi.advanceTimersByTime(20);
+    vi.advanceTimersByTime(80);
+    expect(manager.getLogBuffer()).toHaveLength(2);
   });
 
   it('flushes pending HEX line when switching HEX back to text', () => {

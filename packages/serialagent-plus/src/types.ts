@@ -42,6 +42,8 @@ export interface SerialConfig {
   encoding: SerialEncoding;
   /** HEX 显示模式的空闲换行阈值：字节间隔超过该毫秒数即提交为一行（文本模式不换行） */
   rxIdleWrapMs: number;
+  /** 日志缓冲上限（KB）：日志区显示与扩展日志缓冲（Save/MCP 回看）共用，默认 1024，最大 10240 */
+  logBufferKB: number;
 }
 
 export const DEFAULT_CONFIG: SerialConfig = {
@@ -56,6 +58,7 @@ export const DEFAULT_CONFIG: SerialConfig = {
   hexMode: false,
   encoding: 'utf8',
   rxIdleWrapMs: 20,
+  logBufferKB: 1024,
 };
 
 /**

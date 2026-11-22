@@ -8,7 +8,9 @@ type SerialPortStatic = typeof import('serialport').SerialPort;
 let cachedSerialPort: SerialPortStatic | null = null;
 let serialportError: string | null = null;
 
-const MAX_LOG_LINES = 5000;
+// 日志缓冲上限按 总字节数 限制（Save Log / MCP read_serial_log 的回看量），
+// 大小由 logBufferKB 配置（默认 1024KB，最大 10240KB），超限从最旧端丢弃
+const LOG_BUFFER_KB_LIMIT = 10240;
 const MAX_RX_BUFFER = 1024 * 1024;
 const RECONNECT_INTERVAL_MS = 2000;
 const PORT_METADATA_TIMEOUT_MS = 3000;
@@ -66,6 +68,7 @@ function requireSerialPort(): SerialPortStatic | null {
 export class SerialManager implements SerialRuntime {
   private _port: SerialPortClass | null = null;
   private _logBuffer: string[] = [];
+  private _logBufferBytes = 0;
   private _rxBuffer: Buffer = Buffer.alloc(0);
   private _config: SerialConfig = { ...DEFAULT_CONFIG };
   private _rxFlushTimer: ReturnType<typeof setTimeout> | null = null;
@@ -246,7 +249,8 @@ export class SerialManager implements SerialRuntime {
         this._flushPendingRx();
         const flushed = this._logBuffer[this._logBuffer.length - 1] ?? '';
         if (flushed) {
-          this._logBuffer.pop();
+          const popped = this._logBuffer.pop();
+          if (popped !== undefined) { this._logBufferBytes -= Buffer.byteLength(popped, 'utf8'); }
           this._commitWrappedLine(flushed);
         }
       }
@@ -273,7 +277,7 @@ export class SerialManager implements SerialRuntime {
   get txBytes(): number { return this._txBytes; }
 
   getLogBuffer(): string[] { return [...this._logBuffer]; }
-  clearLog(): void { this._logBuffer = []; }
+  clearLog(): void { this._logBuffer = []; this._logBufferBytes = 0; }
 
   resetCounters(): void {
     this._rxBytes = 0;
@@ -305,9 +309,23 @@ export class SerialManager implements SerialRuntime {
     if (idx !== -1) { this._newLogSubscribers.splice(idx, 1); }
   }
 
-  private _appendLogLine(line: string, webviewLine?: string): void {
+  /** 追加一条日志并按总字节数上限裁剪最旧条目（至少保留最新一条） */
+  private _pushLogBuffer(line: string): void {
     this._logBuffer.push(line);
-    if (this._logBuffer.length > MAX_LOG_LINES) { this._logBuffer.shift(); }
+    this._logBufferBytes += Buffer.byteLength(line, 'utf8');
+    while (this._logBuffer.length > 1 && this._logBufferBytes > this._logBufferLimitBytes()) {
+      this._logBufferBytes -= Buffer.byteLength(this._logBuffer[0], 'utf8');
+      this._logBuffer.shift();
+    }
+  }
+
+  private _logBufferLimitBytes(): number {
+    const kb = Math.floor(this._config.logBufferKB);
+    return Math.max(1, Math.min(LOG_BUFFER_KB_LIMIT, kb || 1024)) * 1024;
+  }
+
+  private _appendLogLine(line: string, webviewLine?: string): void {
+    this._pushLogBuffer(line);
     // webview 通道可携带无时间戳装饰的原始行（webview 自行在显示行提交时加时间戳）
     this._onLog?.((webviewLine ?? line) + '\n');
     for (const callback of this._newLogSubscribers) {
@@ -324,6 +342,13 @@ export class SerialManager implements SerialRuntime {
           .map((byte) => byte.toString(16).padStart(2, '0').toUpperCase())
           .join(' ');
         this._hexPending = this._hexPending ? `${this._hexPending} ${hex}` : hex;
+      }
+      // 单行保护：持续数据流会不断推迟空闲换行，超限时强制提交一行，
+      // 与文本路径的 MAX_RX_BUFFER 兜底一致，避免 _hexPending 无限增长
+      if (this._hexPending.length > MAX_RX_BUFFER) {
+        this._clearRxWrap();
+        this._wrapPendingRx();
+        return;
       }
       this._scheduleRxPartialFlush();
       this._scheduleRxWrap();
@@ -405,7 +430,12 @@ export class SerialManager implements SerialRuntime {
       if (this._hexPending.length > this._hexSentLen) {
         const delta = this._hexPending.slice(this._hexSentLen);
         this._hexSentLen = this._hexPending.length;
-        this._appendPartialLine(delta);
+        // 增量只发 webview/订阅通道，不进日志缓冲：提交时整行写入，
+        // 避免分片与完整行并存（MCP 回显行插入分片间时）造成 Save/MCP 回看重复
+        this._onLog?.(delta);
+        for (const callback of this._newLogSubscribers) {
+          callback(delta);
+        }
       }
       return;
     }
@@ -440,11 +470,11 @@ export class SerialManager implements SerialRuntime {
       removeCount++;
     }
     if (merged === line) {
-      this._logBuffer.splice(this._logBuffer.length - removeCount, removeCount);
+      const removed = this._logBuffer.splice(this._logBuffer.length - removeCount, removeCount);
+      for (const entry of removed) { this._logBufferBytes -= Buffer.byteLength(entry, 'utf8'); }
     }
     const tsLine = this._config.showTimestamp ? `${this._createLogTimestamp()} ${line}` : line;
-    this._logBuffer.push(tsLine);
-    if (this._logBuffer.length > MAX_LOG_LINES) { this._logBuffer.shift(); }
+    this._pushLogBuffer(tsLine);
     // webview 已通过 partial 收到全部文本，仅补一个换行提交显示行
     this._onLog?.('\n');
     for (const callback of this._newLogSubscribers) {
@@ -453,8 +483,7 @@ export class SerialManager implements SerialRuntime {
   }
 
   private _appendPartialLine(text: string): void {
-    this._logBuffer.push(text);
-    if (this._logBuffer.length > MAX_LOG_LINES) { this._logBuffer.shift(); }
+    this._pushLogBuffer(text);
     // 注意：不带结尾换行，webview 端将其保留在 in-progress 行中
     this._onLog?.(text);
     for (const callback of this._newLogSubscribers) {

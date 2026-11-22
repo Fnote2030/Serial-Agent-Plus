@@ -80,6 +80,8 @@ export function activate(context: vscode.ExtensionContext) {
   context.subscriptions.push(bridgeOutputChannel);
 
   const provider = new SerialPanelProvider(context, serialManager, updateStatusBar);
+  // 面板未打开时（如仅经 MCP bridge 连接）也保证日志缓冲上限来自工作区设置
+  provider.handleLogBufferConfigChange();
   context.subscriptions.push(provider);
   context.subscriptions.push(
     vscode.window.registerWebviewViewProvider(SerialPanelProvider.viewType, provider, {
@@ -207,6 +209,9 @@ export function activate(context: vscode.ExtensionContext) {
         || event.affectsConfiguration('serialagent.portRefreshMetadataIntervalMs')
       ) {
         provider.handlePortRefreshConfigChange();
+      }
+      if (event.affectsConfiguration('serialagent.logBufferKB')) {
+        provider.handleLogBufferConfigChange();
       }
     }),
   );

@@ -137,6 +137,19 @@ export class SerialPanelProvider implements vscode.WebviewViewProvider, vscode.D
     this._portAutoRefresh.handleConfigChange();
   }
 
+  /** 读取后台配置 serialagent.logBufferKB（钳制 1..10240） */
+  private _readLogBufferKB(): number {
+    const kb = vscode.workspace.getConfiguration('serialagent').get<number>('logBufferKB', 1024);
+    return Math.max(1, Math.min(10240, Math.floor(kb) || 1024));
+  }
+
+  /** 配置变化：同步 manager 与已打开的 webview */
+  public handleLogBufferConfigChange(): void {
+    const kb = this._readLogBufferKB();
+    this._serialManager.updateSettings({ logBufferKB: kb });
+    this.postMessage({ type: 'updateLogBuffer', logBufferKB: kb });
+  }
+
   private _isAnyViewVisible(): boolean {
     return !!(this._view?.visible || this._panel?.visible);
   }
@@ -227,6 +240,8 @@ export class SerialPanelProvider implements vscode.WebviewViewProvider, vscode.D
 
   private _initializeView(webview: vscode.Webview): void {
     const savedConfig = this._loadConfig();
+    // 缓冲上限来自后台配置项 serialagent.logBufferKB（优先于历史 globalState 存值）
+    savedConfig.logBufferKB = this._readLogBufferKB();
     this._serialManager.updateSettings(savedConfig);
     this._serialManager.setCallbacks({
       onLog: (text) => {
@@ -310,6 +325,7 @@ export class SerialPanelProvider implements vscode.WebviewViewProvider, vscode.D
             rxIdleWrapMs: typeof data.rxIdleWrapMs === 'number' && data.rxIdleWrapMs >= 1
               ? Math.floor(data.rxIdleWrapMs)
               : currentCfg.rxIdleWrapMs,
+            logBufferKB: currentCfg.logBufferKB,
           };
           this._saveConfig(config);
           await this._serialManager.connect(config);
