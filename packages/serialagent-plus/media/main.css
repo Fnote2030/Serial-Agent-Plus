@@ -131,7 +131,12 @@ body {
   display: inline-flex;
   align-items: center;
   gap: 3px;
-  padding: 3px 8px;
+  box-sizing: border-box;
+  height: 24px;
+  min-height: 24px;
+  max-height: 24px;
+  padding-block: 0;
+  padding-inline: 8px;
   font-size: 11px;
   line-height: 16px;
   border: 1px solid var(--vscode-input-border, rgba(128, 128, 128, 0.3));
@@ -143,6 +148,19 @@ body {
 
 .status-action-btn:hover {
   background: var(--vscode-button-secondaryHoverBackground, rgba(128, 128, 128, 0.3));
+}
+
+/* 聚焦指示画在按钮内部（与日志工具条一致），不改变按钮视觉高度 */
+.status-action-btn:focus {
+  outline: none;
+  box-shadow: inset 0 0 0 1px var(--vscode-focusBorder);
+}
+
+/* Config 按钮加大 1px，视觉上与彩色 Open/Close 按钮等高 */
+#btn-config-toggle {
+  height: 25px;
+  min-height: 25px;
+  max-height: 25px;
 }
 
 .status-action-btn.status-action-primary {
@@ -641,7 +659,9 @@ body {
 
 .send-options-row {
   flex-shrink: 0;
-  gap: calc(8px + 2ch);
+  flex-wrap: wrap;
+  row-gap: 4px;
+  column-gap: calc(8px + 2ch);
 }
 
 .send-options-row .option-item {
@@ -652,7 +672,7 @@ body {
 .history-dropdown {
   position: relative;
   flex: 1;
-  min-width: 0;
+  min-width: 80px;
 }
 
 .history-toggle {

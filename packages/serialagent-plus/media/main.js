@@ -350,6 +350,29 @@
       }
     });
 
+    // 串口配置页下拉框：悬停自动聚焦，聚焦后不展开也能用滚轮切换选项
+    function bindHoverWheelSelect(select) {
+      if (!select) { return; }
+      select.addEventListener('mouseenter', () => {
+        select.focus({ preventScroll: true });
+      });
+      select.addEventListener('wheel', (event) => {
+        if (document.activeElement !== select) { return; }
+        event.preventDefault();
+        const delta = event.deltaY > 0 ? 1 : (event.deltaY < 0 ? -1 : 0);
+        const options = select.options;
+        if (!delta || !options || options.length === 0) { return; }
+        const next = Math.max(0, Math.min(options.length - 1, select.selectedIndex + delta));
+        if (next !== select.selectedIndex) {
+          select.selectedIndex = next;
+          select.dispatchEvent(new Event('change', { bubbles: true }));
+        }
+      }, { passive: false });
+    }
+
+    [portSelect, baudratePresetSelect, databitsSelect, paritySelect, stopbitsSelect, flowControlSelect]
+      .forEach((select) => bindHoverWheelSelect(select));
+
     optPeriodicSend?.addEventListener('change', () => {
       handlePeriodicSendToggle();
       saveState();
@@ -361,6 +384,13 @@
         stopPeriodicSend();
         startPeriodicSend();
       }
+    });
+
+    // Cycle / Wrap 数值输入框：光标悬停自动聚焦（无需先点击）
+    [periodicIntervalInput, rxIdleWrapInput].forEach((input) => {
+      input?.addEventListener('mouseenter', () => {
+        input.focus({ preventScroll: true });
+      });
     });
 
     function applyBaudPreset(value) {
@@ -376,12 +406,29 @@
 
     baudratePresetSelect?.addEventListener('change', () => {
       if (!baudratePresetSelect.value) {
-        baudrateInput?.focus();
-        baudrateInput?.select();
+        // Custom：聚焦保持在当前下拉框（滚轮选择后不打断），不转移到自定义输入框
         return;
       }
       applyBaudPreset(baudratePresetSelect.value);
     });
+
+    // 自定义波特率输入框：滚轮调整并吸附到 100 的倍数（与 Cycle 的步进逻辑一致，
+    // 个位/十位非 0 时滚动会归零），悬停即可、无需先点击聚焦
+    baudrateInput?.addEventListener('wheel', (event) => {
+      event.preventDefault();
+      const step = 100;
+      const current = parseInt(baudrateInput.value, 10) || 115200;
+      let next;
+      if (event.deltaY > 0) {
+        next = Math.floor(current / step) * step + step; // 下一个 100 的倍数
+      } else if (event.deltaY < 0) {
+        next = Math.ceil(current / step) * step - step;  // 上一个 100 的倍数
+      } else {
+        return;
+      }
+      baudrateInput.value = String(Math.max(1, Math.min(4000000, next)));
+      baudrateInput.dispatchEvent(new Event('change', { bubbles: true }));
+    }, { passive: false });
 
     optTimestamp?.addEventListener('change', () => {
       vscode.postMessage({ type: 'updateSettings', showTimestamp: optTimestamp.checked });
@@ -748,6 +795,9 @@
       tabSync.active = true;
       tabSync.sent = line;
     }
+    // 必须清掉上一次补全留下的去激活定时器：否则快速再按 Tab 时，
+    // 旧定时器会把 tabSync 提前关闭，本次 redraw 同步失效，输入行永久为空
+    if (syncTimers.tab) { clearTimeout(syncTimers.tab); syncTimers.tab = null; }
     historySync = false;
     cancelHistoryRestore();
     if (syncTimers.history) { clearTimeout(syncTimers.history); syncTimers.history = null; }
@@ -1169,6 +1219,16 @@
     const focus = selection.focusNode;
     return !!logArea && !!anchor && !!focus && logArea.contains(anchor) && logArea.contains(focus);
   }
+
+  // 取消选中后立即补渲染选中期间累积的日志（不等下一次数据到达）
+  let logAreaWasSelected = false;
+  document.addEventListener('selectionchange', () => {
+    const selected = logAreaHasSelection();
+    if (logAreaWasSelected && !selected && !frozenLog) {
+      renderLogArea();
+    }
+    logAreaWasSelected = selected;
+  });
 
   function renderLogArea(force) {
     if (!logArea) {

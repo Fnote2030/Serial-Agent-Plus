@@ -19,8 +19,10 @@ button {
   border: none;
   padding: var(--input-padding-vertical) var(--input-padding-horizontal);
   text-align: center;
+  /* 聚焦轮廓画在按钮边缘（offset 0）：原 2px 外扩 + !important 会让聚焦按钮
+     视觉上比未聚焦按钮高出约 5px（如 Config vs Close），且贴边被裁剪 */
   outline: 1px solid transparent;
-  outline-offset: 2px !important;
+  outline-offset: 0;
   cursor: pointer;
   border-radius: 2px;
 }
