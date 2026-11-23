@@ -669,6 +669,18 @@ body {
   white-space: nowrap;
 }
 
+/* Cycle 复选框 + 数值输入 + ms 单位是一个整体，换行时不拆分 */
+.cycle-group {
+  display: inline-flex;
+  align-items: center;
+  flex-shrink: 0;
+  gap: 8px;
+}
+
+.cycle-group .periodic-unit {
+  margin-left: -4px;
+}
+
 .history-dropdown {
   position: relative;
   flex: 1;

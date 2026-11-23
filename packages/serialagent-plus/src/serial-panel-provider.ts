@@ -618,12 +618,14 @@ export class SerialPanelProvider implements vscode.WebviewViewProvider, vscode.D
           <button class="history-toggle" id="history-toggle" type="button">-- History --</button>
           <div class="history-menu" id="history-menu"></div>
         </div>
-        <label class="option-item" title="Periodically resend the current send box content">
-          <input type="checkbox" id="opt-periodic-send" />
-          <span>Cycle</span>
-        </label>
-        <input id="periodic-interval-input" class="periodic-interval-input" type="number" min="10" step="10" value="1000" title="Periodic interval in ms (min 10)" />
-        <span class="periodic-unit">ms</span>
+        <div class="cycle-group" title="Periodically resend the current send box content">
+          <label class="option-item">
+            <input type="checkbox" id="opt-periodic-send" />
+            <span>Cycle</span>
+          </label>
+          <input id="periodic-interval-input" class="periodic-interval-input" type="number" min="10" step="10" value="1000" title="Periodic interval in ms (min 10)" />
+          <span class="periodic-unit">ms</span>
+        </div>
         <button id="btn-send" class="btn-send">Send</button>
       </div>
       <div class="send-input-row">
