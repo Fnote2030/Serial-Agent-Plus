@@ -1,14 +1,15 @@
 import * as vscode from 'vscode';
 import { BridgeServer } from './bridge-server';
+import { MonitorHost } from './monitor-host';
 import { SerialPanelProvider } from './serial-panel-provider';
-import { SerialManager } from './serial-manager';
 
-const serialManager = new SerialManager();
 const bridgeOutputChannel = vscode.window.createOutputChannel('Serial Agent Plus Bridge');
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const extensionPkgVersion: string = (require('../package.json') as { version: string }).version;
-const bridgeServer = new BridgeServer(serialManager, bridgeOutputChannel, true, extensionPkgVersion);
 
+let monitorHost: MonitorHost;
+let bridgeServer: BridgeServer;
+let serialPanelProviderRef: SerialPanelProvider | undefined;
 let statusBarItem: vscode.StatusBarItem;
 let bridgeStatusBarItem: vscode.StatusBarItem;
 let bridgeRunning = false;
@@ -49,20 +50,14 @@ function updateBridgeStatusBar(): void {
   }
 }
 
-function updateStatusBar(connected: boolean, port?: string, baudRate?: number): void {
-  if (connected && port) {
-    statusBarItem.text = `$(plug) ${port} @ ${baudRate}`;
-    statusBarItem.tooltip = 'Serial Agent Plus: Connected (click to disconnect)';
-    statusBarItem.backgroundColor = undefined;
-  } else if (serialManager.isReconnecting) {
-    statusBarItem.text = '$(sync~spin) Reconnecting...';
-    statusBarItem.tooltip = 'Serial Agent Plus: Attempting to reconnect';
-    statusBarItem.backgroundColor = new vscode.ThemeColor('statusBarItem.warningBackground');
-  } else {
-    statusBarItem.text = '$(debug-disconnect) Serial';
-    statusBarItem.tooltip = 'Serial Agent Plus: Disconnected (click to open panel)';
-    statusBarItem.backgroundColor = undefined;
-  }
+/** 状态栏聚合：Serial 已连接数/总数（点击 Quick Pick 切换监视器，P2 完善） */
+function updateStatusBarAggregate(): void {
+  if (!monitorHost) { return; }
+  const infos = monitorHost.list();
+  const connected = infos.filter((m) => m.connected).length;
+  statusBarItem.text = `$(plug) Serial ${connected}/${infos.length}`;
+  statusBarItem.tooltip = 'Serial Agent Plus: monitors connected (click to focus panel)';
+  statusBarItem.backgroundColor = undefined;
 }
 
 export function activate(context: vscode.ExtensionContext) {
@@ -73,13 +68,25 @@ export function activate(context: vscode.ExtensionContext) {
   context.subscriptions.push(bridgeStatusBarItem);
 
   statusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 100);
-  statusBarItem.command = 'serialagent.toggleConnection';
-  updateStatusBar(false);
+  statusBarItem.command = 'serialagent-plus.serialPanel.focus';
+  updateStatusBarAggregate();
   statusBarItem.show();
   context.subscriptions.push(statusBarItem);
   context.subscriptions.push(bridgeOutputChannel);
 
-  const provider = new SerialPanelProvider(context, serialManager, updateStatusBar);
+  monitorHost = MonitorHost.create(context, (event) => {
+    serialPanelProviderRef?.handleHostEvent(event);
+    if (event.type === 'metas' || event.type === 'status') {
+      updateStatusBarAggregate();
+    }
+  });
+  context.subscriptions.push(monitorHost);
+
+  // P1/P2：bridge 绑定主监视器（列表第一个）；P3 将按监视器路由
+  bridgeServer = new BridgeServer(monitorHost.primary().manager, bridgeOutputChannel, true, extensionPkgVersion);
+
+  const provider = new SerialPanelProvider(context, monitorHost, () => { updateStatusBarAggregate(); });
+  serialPanelProviderRef = provider;
   // 面板未打开时（如仅经 MCP bridge 连接）也保证日志缓冲上限来自工作区设置
   provider.handleLogBufferConfigChange();
   context.subscriptions.push(provider);
@@ -104,6 +111,16 @@ export function activate(context: vscode.ExtensionContext) {
   });
 
   context.subscriptions.push(
+    vscode.commands.registerCommand('serialagent.addMonitor', () => {
+      if (!monitorHost.registry.canCreate()) {
+        vscode.window.showWarningMessage('[Serial Agent Plus] Monitor limit reached (10)');
+        return;
+      }
+      monitorHost.createMonitor();
+    }),
+  );
+
+  context.subscriptions.push(
     vscode.commands.registerCommand('serialagent.refreshPorts', async () => {
       await provider.refreshPortList({ forceFull: true });
     }),
@@ -111,7 +128,8 @@ export function activate(context: vscode.ExtensionContext) {
 
   context.subscriptions.push(
     vscode.commands.registerCommand('serialagent.toggleConnection', () => {
-      if (serialManager.isConnected) {
+      const primary = monitorHost.primary().manager;
+      if (primary.isConnected) {
         void vscode.commands.executeCommand('serialagent.disconnect');
       } else {
         void vscode.commands.executeCommand('serialagent-plus.serialPanel.focus');
@@ -121,15 +139,17 @@ export function activate(context: vscode.ExtensionContext) {
 
   context.subscriptions.push(
     vscode.commands.registerCommand('serialagent.disconnect', async () => {
-      await serialManager.disconnect();
+      await monitorHost.primary().manager.disconnect();
     }),
   );
 
   context.subscriptions.push(
     vscode.commands.registerCommand('serialagent.clearLog', () => {
-      serialManager.clearLog();
-      serialManager.resetCounters();
-      provider.postMessage({ type: 'clearLog' });
+      const rt = monitorHost.primary();
+      rt.manager.clearLog();
+      rt.manager.resetCounters();
+      rt.session.resetEditing();
+      serialPanelProviderRef?.postMessage({ type: 'clearLog', monitorId: rt.meta.id });
     }),
   );
 
@@ -218,6 +238,6 @@ export function activate(context: vscode.ExtensionContext) {
 }
 
 export async function deactivate(): Promise<void> {
-  await bridgeServer.stop();
-  await serialManager.disconnect();
+  await bridgeServer?.stop();
+  await monitorHost?.dispose();
 }

@@ -77,6 +77,28 @@ body {
   min-width: 0;
 }
 
+.accordion-header-add {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--vscode-descriptionForeground);
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.accordion-header-add:hover {
+  background: var(--vscode-button-secondaryHoverBackground, rgba(128, 128, 128, 0.3));
+  color: var(--vscode-foreground);
+}
+
 .accordion-body {
   display: flex;
   flex-direction: column;
@@ -125,6 +147,141 @@ body {
   border: 1px solid var(--vscode-input-border, rgba(128, 128, 128, 0.3));
   background: var(--vscode-badge-background, rgba(128, 128, 128, 0.15));
   color: var(--vscode-badge-foreground, var(--vscode-descriptionForeground));
+}
+
+/* ---- 多监视器标签栏（VS Code 编辑器选项卡风格）---- */
+.monitor-tabs-wrap {
+  flex-shrink: 0;
+  margin-bottom: 4px;
+}
+
+.monitor-tabs {
+  display: flex;
+  align-items: stretch;
+  gap: 2px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none; /* 原生滚动条完全隐藏（含箭头），顶部用自绘滑块 */
+  -ms-overflow-style: none;
+  flex-shrink: 0;
+  min-height: 24px;
+}
+
+.monitor-tabs::-webkit-scrollbar {
+  display: none;
+  height: 0;
+}
+
+/* 顶部自绘滑块：3px、悬停浮现（同 VS Code 选项卡栏，无箭头） */
+.monitor-tabs-slider {
+  position: relative;
+  height: 3px;
+  border-radius: 2px;
+  margin-bottom: 1px;
+  opacity: 0;
+  transition: opacity 0.15s ease;
+}
+
+/* 悬停标签栏或拖拽滑块时才浮现 */
+.monitor-tabs-wrap:hover .monitor-tabs-slider.visible,
+.monitor-tabs-slider.force-visible {
+  opacity: 1;
+}
+
+.monitor-tabs-slider-thumb {
+  position: absolute;
+  top: 0;
+  left: 0;
+  height: 3px;
+  min-width: 24px;
+  border-radius: 2px;
+  background: var(--vscode-scrollbarSlider-background, rgba(121, 121, 121, 0.4));
+  cursor: pointer;
+}
+
+.monitor-tabs-slider-thumb:hover,
+.monitor-tabs-slider-thumb.dragging {
+  background: var(--vscode-scrollbarSlider-hoverBackground, rgba(100, 100, 100, 0.7));
+}
+
+.monitor-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  flex: 0 0 auto;
+  max-width: 180px;
+  padding: 0 5px 0 8px;
+  font-size: 11px;
+  line-height: 21px;
+  border: 1px solid transparent;
+  border-bottom: none;
+  border-radius: 4px 4px 0 0;
+  background: transparent;
+  color: var(--vscode-descriptionForeground);
+  cursor: pointer;
+  user-select: none;
+  white-space: nowrap;
+}
+
+.monitor-tab:hover {
+  background: var(--vscode-button-secondaryHoverBackground, rgba(128, 128, 128, 0.15));
+  color: var(--vscode-foreground);
+}
+
+.monitor-tab.active {
+  background: var(--vscode-editorGroupHeader-tabsBackground, rgba(128, 128, 128, 0.12));
+  border-color: var(--vscode-panel-border, rgba(128, 128, 128, 0.25));
+  color: var(--vscode-foreground);
+  font-weight: 600;
+  /* 底部主题色强调条：明显但不突兀 */
+  box-shadow: inset 0 -2px 0 var(--vscode-focusBorder, var(--vscode-foreground, #0078d4));
+}
+
+.monitor-tab-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.monitor-tab .status-indicator {
+  width: 6px;
+  height: 6px;
+  margin-right: 0;
+  flex: none;
+}
+
+.monitor-tab-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 15px;
+  height: 15px;
+  padding: 0;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: inherit;
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+  opacity: 0.3;
+}
+
+.monitor-tab-close:hover {
+  opacity: 1;
+  background: var(--vscode-inputValidation-errorBorder, #f14c4c);
+  color: #fff;
+}
+
+.monitor-tab-rename-input {
+  width: 110px;
+  height: 18px;
+  padding: 0 4px;
+  font-size: 11px;
+  color: var(--vscode-input-foreground);
+  background: var(--vscode-input-background);
+  border: 1px solid var(--vscode-focusBorder);
+  border-radius: 4px;
+  outline: none;
 }
 
 .status-action-btn {
@@ -561,13 +718,16 @@ body {
   gap: 6px;
   padding-bottom: 4px;
   flex: 0 0 38%;
-  min-height: 120px;
+  min-height: 60px;
+  /* Manage Quick Commands 展开后在发送区内部滚动，不把输入框挤出视图 */
+  overflow-y: auto;
 }
 
 .quick-command-bar {
   display: flex;
   align-items: center;
   min-height: 34px;
+  flex-shrink: 0;
 }
 
 .quick-command-bar.hidden {
@@ -605,6 +765,7 @@ body {
   border-radius: 8px;
   padding: 6px 8px;
   background: rgba(128, 128, 128, 0.04);
+  flex-shrink: 0;
 }
 
 .quick-command-editor summary {
@@ -637,6 +798,8 @@ body {
   display: flex;
   flex-direction: column;
   gap: 6px;
+  max-height: 140px;
+  overflow-y: auto;
   margin-top: 8px;
 }
 
@@ -806,6 +969,7 @@ body {
 
 .send-input-row textarea {
   flex: 1;
+  min-height: 44px; /* 发送区压缩时保留可用的输入高度，其余部分滚动 */
   padding: 8px 10px;
   font-size: 12px;
   font-family: var(--vscode-editor-font-family, 'Consolas', monospace);

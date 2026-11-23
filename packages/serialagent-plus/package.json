@@ -94,6 +94,12 @@
           "light": "media/SerialAgentPlus.svg",
           "dark": "media/SerialAgentPlus.svg"
         }
+      },
+      {
+        "command": "serialagent.addMonitor",
+        "title": "Add Serial Monitor",
+        "category": "Serial Agent Plus",
+        "icon": "$(add)"
       }
     ],
     "configuration": {

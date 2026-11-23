@@ -31,7 +31,16 @@ function createProvider() {
     },
   };
 
-  return new SerialPanelProvider(context as any, {} as any, vi.fn());
+  // 最小 MonitorHost 桩：HTML 渲染不触串口，仅需 primary().manager.listPorts 形状
+  const managerStub = { listPorts: vi.fn(async () => []) };
+  const hostStub = {
+    primary: () => ({ manager: managerStub }),
+    list: () => [],
+    runtime: () => undefined,
+    registry: {},
+  };
+
+  return new SerialPanelProvider(context as any, hostStub as any, vi.fn());
 }
 
 function createWebview() {

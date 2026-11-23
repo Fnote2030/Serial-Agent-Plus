@@ -14,9 +14,6 @@
   // @ts-ignore
   const vscode = acquireVsCodeApi();
 
-  // @ts-ignore -- 由 media/terminal-device-line.js 提供（在本脚本之前加载）
-  const TerminalDeviceLine = globalThis.TerminalDeviceLine;
-
   const MAX_HISTORY = 20;
   // 显示缓冲上限按 UTF-8 总字节数限制，大小来自后台配置项 serialagent.logBufferKB
   // （默认 1024=1MB，最大 10240=10MB），由扩展侧推送（restoreConfig / updateLogBuffer）
@@ -119,64 +116,71 @@
   const quickCommandSaveBtn = document.getElementById('btn-quick-command-save');
   const quickCommandResetBtn = document.getElementById('btn-quick-command-reset');
 
-  let connected = false;
-  let pendingPort = '';
-  let sendHistory = /** @type {string[]} */ ([]);
+  const monitorTabs = document.getElementById('monitor-tabs');
+  const monitorTabsSlider = document.getElementById('monitor-tabs-slider');
+  const monitorTabsThumb = monitorTabsSlider?.querySelector('.monitor-tabs-slider-thumb') ?? null;
+  const monitorAddBtn = document.getElementById('btn-add-monitor');
+
   let quickCommands = /** @type {QuickCommand[]} */ ([]);
   let editingQuickCommandId = '';
   let frozenLog = false;
-  let logEntries = /** @type {LogEntry[]} */ ([]);
-  let logEntriesBytes = 0;
   let activeLogFilter = '';
   let normalSendHeight;
   let periodicTimer = null;
-  let pendingSendAfterConnect = false;
-  let pendingTerminalLine = null;
-  let terminalBuffer = '';
-  let terminalCaret = 0;
-  // 设备 shell 编辑缓冲当前持有的行（↑/↓ 历史或 Tab 补全 redraw 同步后非空，null 表示为空）。
-  // Enter/Tab 发送前按它对齐，避免整行重发被设备追加成 "lsls"。
-  let terminalDeviceLine = /** @type {string | null} */ (null);
-  const rxSim = TerminalDeviceLine.createRxLineSimulator();
-  const rxLine = rxSim.line;
-  let tabSync = { active: false, sent: '' };
-  let terminalHistory = [];
-  let historySync = false;
-  let historyRestore = null; // ↑/↓ 后等待 redraw 的快照；设备在历史边界不再重绘，超时恢复
-  let historyRestoreTimer = null;
-  const syncTimers = { tab: null, history: null };
 
-  function cancelHistoryRestore() {
-    if (historyRestoreTimer) { clearTimeout(historyRestoreTimer); historyRestoreTimer = null; }
-    historyRestore = null;
+  // ---- 多监视器状态：列表 + 按监视器分桶 ----
+  /** @type {{ id: string; index: number; name: string; connected: boolean; port: string; baudRate: number; parity: string }[]} */
+  let monitors = [];
+  let activeMonitorId = '';
+  let pendingPort = ''; // updatePorts 到达前保留的目标端口（如恢复的配置）
+
+  /**
+   * @typedef {{ logEntries: LogEntry[]; logEntriesBytes: number; sendHistory: string[];
+   *             sendDraft: string; connected: boolean; pendingSendAfterConnect: boolean;
+   *             rxCount: number; txCount: number; statusText: string; statusConnected: boolean;
+   *             statusPort: string; statusBaud: number; statusParity: string;
+   *             terminal: { liveLine: string; buffer: string; caret: number; deviceLine: string | null } }} MonitorBucket
+   */
+  /** @type {Object<string, MonitorBucket>} */
+  const buckets = /** @type {Record<string, MonitorBucket>} */ ({});
+
+  function defaultBucket() {
+    return {
+      logEntries: [],
+      logEntriesBytes: 0,
+      sendHistory: [],
+      sendDraft: '',
+      config: null,
+      ui: null,
+      connected: false,
+      pendingSendAfterConnect: false,
+      rxCount: 0,
+      txCount: 0,
+      statusText: 'Disconnected',
+      statusConnected: false,
+      statusPort: '',
+      statusBaud: 0,
+      statusParity: 'none',
+      terminal: { liveLine: '', buffer: '', caret: 0, deviceLine: null },
+    };
   }
 
-  // msh 在最旧历史条目再按 ↑ 时不再重绘（设备编辑行保持原内容，本地已清空）：
-  // 200ms 内没有 redraw 同步则恢复按键前的本地输入行与设备行状态
-  function restorePendingHistoryLine() {
-    historyRestoreTimer = null;
-    if (!historyRestore) { return; }
-    terminalBuffer = historyRestore.buffer;
-    terminalCaret = historyRestore.caret;
-    terminalDeviceLine = historyRestore.deviceLine;
-    historyRestore = null;
-    renderLogArea();
+  function bucketFor(id) {
+    if (!buckets[id]) { buckets[id] = defaultBucket(); }
+    return buckets[id];
   }
 
-  // 同步去激活采用防抖：设备回显/redraw 分片多次到达，最后一次匹配后 200ms 才失效，
-  // 避免回显分片触发过早同步后、redraw 分片再也无法修正。
-  function scheduleSyncDeactivate(kind) {
-    if (syncTimers[kind]) { clearTimeout(syncTimers[kind]); }
-    syncTimers[kind] = setTimeout(() => {
-      if (kind === 'tab') { tabSync.active = false; } else { historySync = false; }
-      syncTimers[kind] = null;
-    }, 200);
+  function activeBucket() {
+    return bucketFor(activeMonitorId);
   }
 
-  function clearSyncTimers() {
-    if (syncTimers.tab) { clearTimeout(syncTimers.tab); syncTimers.tab = null; }
-    if (syncTimers.history) { clearTimeout(syncTimers.history); syncTimers.history = null; }
-    cancelHistoryRestore();
+  function activeMeta() {
+    return monitors.find((m) => m.id === activeMonitorId) || null;
+  }
+
+  /** 向当前监视器的扩展侧终端会话发送按键意图 */
+  function sendKeyIntent(intent) {
+    vscode.postMessage({ type: 'terminalKey', monitorId: activeMonitorId, intent });
   }
 
   restoreWebviewState();
@@ -247,99 +251,90 @@
           return;
         }
         event.preventDefault();
-        terminalBuffer = '';
-        terminalCaret = 0;
-        terminalDeviceLine = null; // 设备收到 ^C 会丢弃编辑行
-        cancelHistoryRestore();
-        renderLogArea();
-        sendTerminalBytes('\x03');
+        sendKeyIntent({ type: 'ctrlC' });
         return;
       }
       if (event.ctrlKey || event.metaKey || event.altKey) {
         return;
       }
 
+      // 终端行编辑状态在扩展侧（TerminalSession），这里只发送按键意图
       if (key === 'Enter') {
         event.preventDefault();
-        handleTerminalEnter();
+        sendKeyIntent({ type: 'enter' });
         return;
       }
 
       if (key === 'Tab') {
         event.preventDefault();
-        handleTerminalTab();
+        sendKeyIntent({ type: 'tab' });
         return;
       }
 
       if (key === 'Backspace') {
         event.preventDefault();
-        terminalBackspace();
+        sendKeyIntent({ type: 'backspace' });
         return;
       }
 
       if (key === 'Delete') {
         event.preventDefault();
-        terminalDelete();
+        sendKeyIntent({ type: 'delete' });
         return;
       }
 
       if (key === 'ArrowLeft') {
         event.preventDefault();
-        terminalMoveCaret(-1);
+        sendKeyIntent({ type: 'move', delta: -1 });
         return;
       }
 
       if (key === 'ArrowRight') {
         event.preventDefault();
-        terminalMoveCaret(1);
+        sendKeyIntent({ type: 'move', delta: 1 });
         return;
       }
 
       if (key === 'Home') {
         event.preventDefault();
-        terminalMoveCaretTo(0);
+        sendKeyIntent({ type: 'moveTo', position: 'start' });
         return;
       }
 
       if (key === 'End') {
         event.preventDefault();
-        terminalMoveCaretTo(terminalBuffer.length);
+        sendKeyIntent({ type: 'moveTo', position: 'end' });
         return;
       }
 
-      // ??????????
-      const passthrough = terminalPassthroughBytes(key);
-      if (passthrough !== null) {
+      if (key === 'ArrowUp' || key === 'ArrowDown') {
+        // 历史切换由设备 shell 接管（redraw 同步在扩展侧完成）
         event.preventDefault();
-        if (key === 'ArrowUp' || key === 'ArrowDown') {
-          // 历史切换由设备 shell 接管：清空本地缓冲并等待 redraw 同步。
-          // 连续按键且尚无 redraw 时保留最初的快照（最后一次稳定状态）
-          if (!historyRestore) {
-            historyRestore = { buffer: terminalBuffer, caret: terminalCaret, deviceLine: terminalDeviceLine };
-          }
-          if (historyRestoreTimer) { clearTimeout(historyRestoreTimer); }
-          historyRestoreTimer = setTimeout(restorePendingHistoryLine, 200);
-          terminalBuffer = '';
-          terminalCaret = 0;
-          tabSync.active = false;
-          historySync = true;
-          terminalDeviceLine = null; // 设备即将用历史条目替换编辑行，redraw 同步后再更新
-          if (syncTimers.tab) { clearTimeout(syncTimers.tab); syncTimers.tab = null; }
-          if (syncTimers.history) { clearTimeout(syncTimers.history); syncTimers.history = null; }
-          renderLogArea();
-        } else if (key === 'Escape') {
-          terminalBuffer = '';
-          terminalCaret = 0;
-          renderLogArea();
-        }
-        sendTerminalBytes(passthrough);
+        sendKeyIntent({ type: 'history', direction: key === 'ArrowUp' ? 'up' : 'down' });
         return;
       }
 
-      // ????????????????????
+      if (key === 'Escape') {
+        event.preventDefault();
+        sendKeyIntent({ type: 'escape' });
+        return;
+      }
+
+      if (key === 'PageUp') {
+        event.preventDefault();
+        sendKeyIntent({ type: 'passthrough', bytes: '\x1b[5~' });
+        return;
+      }
+
+      if (key === 'PageDown') {
+        event.preventDefault();
+        sendKeyIntent({ type: 'passthrough', bytes: '\x1b[6~' });
+        return;
+      }
+
       if (key.length === 1) {
         event.preventDefault();
-        insertTerminalChar(key);
+        sendKeyIntent({ type: 'print', ch: key });
         return;
       }
     });
@@ -376,6 +371,13 @@
     optPeriodicSend?.addEventListener('change', () => {
       handlePeriodicSendToggle();
       saveState();
+      broadcastUiState();
+    });
+
+    // Echo 开关：跨视口同步
+    optEcho?.addEventListener('change', () => {
+      saveState();
+      broadcastUiState();
     });
 
     periodicIntervalInput?.addEventListener('change', () => {
@@ -384,6 +386,22 @@
         stopPeriodicSend();
         startPeriodicSend();
       }
+      saveState();
+      broadcastUiState();
+    });
+
+    // 滚轮微调数值只触发 input（无 change/blur），需 input 级防抖提交才能跨视口同步
+    let cycleWheelTimer = null;
+    periodicIntervalInput?.addEventListener('input', () => {
+      if (cycleWheelTimer) { clearTimeout(cycleWheelTimer); }
+      cycleWheelTimer = setTimeout(() => {
+        clampPeriodicInterval();
+        if (periodicTimer) {
+          stopPeriodicSend();
+          startPeriodicSend();
+        }
+        broadcastUiState();
+      }, 250);
     });
 
     // Cycle / Wrap 数值输入框：光标悬停自动聚焦（无需先点击）
@@ -402,6 +420,7 @@
       }
       persistCurrentConfigDraft();
       updateMonitorConfigChips();
+      broadcastUiState();
     }
 
     baudratePresetSelect?.addEventListener('change', () => {
@@ -430,23 +449,52 @@
       baudrateInput.dispatchEvent(new Event('change', { bubbles: true }));
     }, { passive: false });
 
+    /** 显示选项变更：写入当前监视器配置并上送（扩展会广播同步所有视口） */
+    function syncDisplayConfig(partial) {
+      const bucket = activeBucket();
+      bucket.config = { ...(bucket.config || collectCurrentConfig()), ...partial };
+    }
+
     optTimestamp?.addEventListener('change', () => {
-      vscode.postMessage({ type: 'updateSettings', showTimestamp: optTimestamp.checked });
+      syncDisplayConfig({ showTimestamp: optTimestamp.checked });
+      vscode.postMessage({ type: 'updateSettings', monitorId: activeMonitorId, showTimestamp: optTimestamp.checked });
+      broadcastUiState();
     });
     optHex?.addEventListener('change', () => {
-      vscode.postMessage({ type: 'updateSettings', hexMode: optHex.checked });
+      syncDisplayConfig({ hexMode: optHex.checked });
+      vscode.postMessage({ type: 'updateSettings', monitorId: activeMonitorId, hexMode: optHex.checked });
+      broadcastUiState();
     });
     lineEndingSelect?.addEventListener('change', () => {
-      vscode.postMessage({ type: 'updateSettings', lineEnding: lineEndingSelect.value });
+      syncDisplayConfig({ lineEnding: lineEndingSelect.value });
+      vscode.postMessage({ type: 'updateSettings', monitorId: activeMonitorId, lineEnding: lineEndingSelect.value });
+      broadcastUiState();
     });
     encodingSelect?.addEventListener('change', () => {
-      vscode.postMessage({ type: 'updateSettings', encoding: encodingSelect.value });
+      syncDisplayConfig({ encoding: encodingSelect.value });
+      vscode.postMessage({ type: 'updateSettings', monitorId: activeMonitorId, encoding: encodingSelect.value });
+      broadcastUiState();
     });
 
     rxIdleWrapInput?.addEventListener('change', () => {
       const value = Math.max(1, Math.min(60000, parseInt(rxIdleWrapInput.value, 10) || 20));
       rxIdleWrapInput.value = String(value);
-      vscode.postMessage({ type: 'updateSettings', rxIdleWrapMs: value });
+      syncDisplayConfig({ rxIdleWrapMs: value });
+      vscode.postMessage({ type: 'updateSettings', monitorId: activeMonitorId, rxIdleWrapMs: value });
+      broadcastUiState();
+    });
+
+    // 滚轮微调数值只触发 input（无 change/blur），需 input 级防抖提交才能跨视口同步
+    let wrapWheelTimer = null;
+    rxIdleWrapInput?.addEventListener('input', () => {
+      if (wrapWheelTimer) { clearTimeout(wrapWheelTimer); }
+      wrapWheelTimer = setTimeout(() => {
+        const value = Math.max(1, Math.min(60000, parseInt(rxIdleWrapInput.value, 10) || 20));
+        if (String(value) !== rxIdleWrapInput.value) { rxIdleWrapInput.value = String(value); }
+        syncDisplayConfig({ rxIdleWrapMs: value });
+        vscode.postMessage({ type: 'updateSettings', monitorId: activeMonitorId, rxIdleWrapMs: value });
+        broadcastUiState();
+      }, 250);
     });
 
     [
@@ -461,12 +509,14 @@
         syncBaudratePreset();
         persistCurrentConfigDraft();
         updateMonitorConfigChips();
+        broadcastUiState();
       });
     });
   }
 
   function updateMonitorConfigChips() {
-    if (connected) {
+    const bucket = activeBucket();
+    if (bucket.connected) {
       monitorPortChip?.classList.add('hidden');
       monitorBaudChip?.classList.add('hidden');
       monitorParityChip?.classList.add('hidden');
@@ -499,6 +549,7 @@
       activeLogFilter = (logSearchInput.value || '').trim().toLowerCase();
       renderLogArea();
       saveState();
+      broadcastUiState();
     });
 
     optAutoScroll?.addEventListener('change', () => {
@@ -506,6 +557,7 @@
         scrollLogToBottom();
       }
       saveState();
+      broadcastUiState();
     });
 
     freezeBtn?.addEventListener('click', () => {
@@ -515,12 +567,14 @@
         renderLogArea(true); // 解冻：强制刷新，补上冻结期间累积的日志
       }
       saveState();
+      broadcastUiState();
     });
 
     clearBtn?.addEventListener('click', () => {
-      vscode.postMessage({ type: 'clearLog' });
-      logEntries = [];
-      logEntriesBytes = 0;
+      vscode.postMessage({ type: 'clearLog', monitorId: activeMonitorId });
+      const bucket = bucketFor(activeMonitorId);
+      bucket.logEntries = [];
+      bucket.logEntriesBytes = 0;
       renderLogArea(true);
     });
 
@@ -547,7 +601,7 @@
     saveLogBtn?.addEventListener('click', () => {
       vscode.postMessage({
         type: 'saveLogToFile',
-        lines: logEntries.map((entry) => entry.text.trimEnd()),
+        lines: activeBucket().logEntries.map((entry) => entry.text.trimEnd()),
       });
     });
   }
@@ -556,6 +610,7 @@
     optHexSend?.addEventListener('change', () => {
       updateSendPlaceholder();
       saveState();
+      broadcastUiState();
     });
 
     sendBtn?.addEventListener('click', () => {
@@ -665,14 +720,14 @@
   }
 
   function handleConnectionToggle() {
-    if (connected) {
-      vscode.postMessage({ type: 'disconnect' });
+    const bucket = activeBucket();
+    if (bucket.connected) {
+      vscode.postMessage({ type: 'disconnect', monitorId: activeMonitorId });
       return;
     }
 
     const config = collectCurrentConfig();
-    vscode.postMessage({ type: 'connect', ...config });
-    vscode.postMessage({ type: 'saveConfig', config });
+    vscode.postMessage({ type: 'connect', monitorId: activeMonitorId, ...config });
   }
 
   function getActiveSendHeight() {
@@ -708,10 +763,11 @@
   }
 
   function updateConnectionButtons() {
+    const bucket = activeBucket();
     if (monitorConnectBtn) {
-      monitorConnectBtn.textContent = connected ? 'Close' : 'Open';
-      monitorConnectBtn.classList.toggle('status-action-primary', !connected);
-      monitorConnectBtn.classList.toggle('status-action-danger', connected);
+      monitorConnectBtn.textContent = bucket.connected ? 'Close' : 'Open';
+      monitorConnectBtn.classList.toggle('status-action-primary', !bucket.connected);
+      monitorConnectBtn.classList.toggle('status-action-danger', bucket.connected);
     }
 
     updateMonitorConfigChips();
@@ -726,159 +782,8 @@
     applyCurrentLayout();
   }
 
-  // ???????????????
-  function terminalPassthroughBytes(key) {
-    switch (key) {
-      case 'Escape': return '\x1b';
-      case 'ArrowUp': return '\x1b[A';
-      case 'ArrowDown': return '\x1b[B';
-      case 'PageUp': return '\x1b[5~';
-      case 'PageDown': return '\x1b[6~';
-    }
-    return null;
-  }
-
-  function sendTerminalBytes(bytes) {
-    if (!connected) {
-      pendingTerminalLine = bytes;
-      const config = collectCurrentConfig();
-      vscode.postMessage({ type: 'connect', ...config });
-      vscode.postMessage({ type: 'saveConfig', config });
-      return;
-    }
-    // Terminal manages its own line endings (already included in bytes).
-    vscode.postMessage({ type: 'sendData', text: bytes, hexSend: false, lineEnding: 'none' });
-  }
-
-  function insertTerminalChar(ch) {
-    terminalBuffer = terminalBuffer.slice(0, terminalCaret) + ch + terminalBuffer.slice(terminalCaret);
-    terminalCaret += ch.length;
-    renderLogArea();
-  }
-
-  function terminalBackspace() {
-    if (terminalCaret > 0) {
-      terminalBuffer = terminalBuffer.slice(0, terminalCaret - 1) + terminalBuffer.slice(terminalCaret);
-      terminalCaret -= 1;
-      renderLogArea();
-    }
-  }
-
-  function terminalDelete() {
-    if (terminalCaret < terminalBuffer.length) {
-      terminalBuffer = terminalBuffer.slice(0, terminalCaret) + terminalBuffer.slice(terminalCaret + 1);
-      renderLogArea();
-    }
-  }
-
-  function terminalMoveCaret(delta) {
-    const next = terminalCaret + delta;
-    if (next >= 0 && next <= terminalBuffer.length) {
-      terminalCaret = next;
-      renderLogArea();
-    }
-  }
-
-  function terminalMoveCaretTo(position) {
-    const clamped = Math.max(0, Math.min(terminalBuffer.length, position));
-    if (clamped !== terminalCaret) {
-      terminalCaret = clamped;
-      renderLogArea();
-    }
-  }
-
-  // Tab = 本地输入行 + \t 原子发送；随后监听设备 redraw，把补全结果同步回本地输入行。
-  // 发送前按设备行对齐：设备已持有该行时只发 \t，本地改过则先退格清空设备行。
-  function handleTerminalTab() {
-    const line = terminalBuffer;
-    if (line) {
-      tabSync.active = true;
-      tabSync.sent = line;
-    }
-    // 必须清掉上一次补全留下的去激活定时器：否则快速再按 Tab 时，
-    // 旧定时器会把 tabSync 提前关闭，本次 redraw 同步失效，输入行永久为空
-    if (syncTimers.tab) { clearTimeout(syncTimers.tab); syncTimers.tab = null; }
-    historySync = false;
-    cancelHistoryRestore();
-    if (syncTimers.history) { clearTimeout(syncTimers.history); syncTimers.history = null; }
-    terminalBuffer = '';
-    terminalCaret = 0;
-    renderLogArea();
-    sendTerminalBytes(TerminalDeviceLine.reconcileBytes(terminalDeviceLine, line, '\t'));
-    // 发送后设备编辑行持有本地行，等补全 redraw 到达再由 tabSync 覆盖
-    terminalDeviceLine = line || null;
-  }
-
-  function pushTerminalHistory(line) {
-    if (terminalHistory[0] === line) {
-      return;
-    }
-    terminalHistory.unshift(line);
-    if (terminalHistory.length > 50) {
-      terminalHistory.pop();
-    }
-  }
-
-  function handleTerminalEnter() {
-    const line = terminalBuffer;
-    terminalBuffer = '';
-    terminalCaret = 0;
-    tabSync.active = false;
-    historySync = false;
-    clearSyncTimers();
-    renderLogArea();
-    if (line.trim()) {
-      pushTerminalHistory(line);
-    }
-    // 终端回车固定发送 CR（串口 shell 惯例，不受发送框 End 设置影响）。
-    // 设备行已同步（↑/↓ 历史、Tab 补全 redraw）时不再整行重发，否则设备会把
-    // 整行追加到自己的编辑缓冲，出现 "ls" -> "lsls" -> "lslsls"；本地改过则先清空设备行。
-    sendTerminalBytes(TerminalDeviceLine.reconcileBytes(terminalDeviceLine, line, '\r'));
-    terminalDeviceLine = null;
-  }
-
-  // RX 行模拟器：设备回显/重绘中的控制字符与 CSI 序列由共享模块的模拟器按语义解释
-  // （\b/\r/\n、ESC[2K 整行擦除、ESC[K 行尾擦除、ESC[nD/C 光标移动等），
-  // 详见 media/terminal-device-line.js。
-  function feedRx(raw) {
-    for (const text of rxSim.feed(raw)) {
-      // Timestamp 选项由 webview 在显示行提交时统一加前缀；
-      // manager 侧的时间戳只进日志缓冲/MCP 通道，不再混入数据流
-      appendLogEntry(optTimestamp?.checked ? `${formatLogTimestamp()} ${text}` : text, 'text');
-    }
-
-    // Tab 补全同步：设备 redraw 行包含发送前的缓冲时，把补全后的完整行同步回本地输入行
-    if (tabSync.active && rxLine.text.includes(tabSync.sent)) {
-      terminalBuffer = rxLine.text.slice(rxLine.text.indexOf(tabSync.sent));
-      terminalCaret = terminalBuffer.length;
-      terminalDeviceLine = terminalBuffer; // 设备编辑缓冲此刻持有补全后的整行
-      scheduleSyncDeactivate('tab');
-      renderLogArea();
-    }
-
-    // 上下键历史同步：设备 redraw 行以历史命令结尾时（最长匹配），同步回本地输入行
-    if (historySync) {
-      let best = null;
-      for (const cmd of terminalHistory) {
-        if (cmd && rxLine.text.endsWith(cmd) && (best === null || cmd.length > best.length)) {
-          best = cmd;
-        }
-      }
-      if (best !== null) {
-        cancelHistoryRestore(); // redraw 已确认，不需要边界恢复
-        terminalBuffer = best;
-        terminalCaret = best.length;
-        terminalDeviceLine = best; // 设备编辑缓冲此刻持有召回的历史行
-        scheduleSyncDeactivate('history');
-        renderLogArea();
-      }
-    }
-
-    renderLogArea();
-    if (optAutoScroll?.checked && !frozenLog) {
-      scrollLogToBottom();
-    }
-  }
+  // 终端行编辑与 RX 行模拟已上移扩展侧（TerminalSession），
+  // webview 通过 terminalKey 意图输入、terminalState 快照渲染。
 
   function unescapeSendText(text) {
     return String(text).replace(/\\(x[0-9a-fA-F]{2}|r|n|t|0|\\)/g, (match, seq) => {
@@ -909,7 +814,7 @@
       return;
     }
     if (optPeriodicSend.checked) {
-      if (!connected) {
+      if (!activeBucket().connected) {
         optPeriodicSend.checked = false;
         return;
       }
@@ -920,15 +825,23 @@
     }
   }
 
+  // 周期发送绑定发起它的监视器：切换标签页不中断，回切时复选框恢复勾选
+  let periodicMonitorId = null;
+
   function startPeriodicSend() {
     if (periodicTimer) {
       return;
     }
+    periodicMonitorId = activeMonitorId;
     const interval = Math.max(10, parseInt(periodicIntervalInput?.value || '1000', 10) || 1000);
     periodicTimer = setInterval(() => {
-      if (connected) {
-        doSend(false);
+      const bucket = bucketFor(periodicMonitorId);
+      if (!bucket.connected) {
+        stopPeriodicSend();
+        syncPeriodicCheckbox();
+        return;
       }
+      doSendFor(periodicMonitorId, false);
     }, interval);
   }
 
@@ -937,9 +850,17 @@
       clearInterval(periodicTimer);
       periodicTimer = null;
     }
+    periodicMonitorId = null;
+  }
+
+  function syncPeriodicCheckbox() {
+    if (optPeriodicSend) {
+      optPeriodicSend.checked = periodicTimer !== null && periodicMonitorId === activeMonitorId;
+    }
   }
 
   function updateSendControlsDisabled() {
+    const connected = activeBucket().connected;
     quickCommandList?.querySelectorAll('.quick-command-chip').forEach((button) => {
       if (button instanceof HTMLButtonElement) {
         button.disabled = !connected;
@@ -1000,8 +921,74 @@
     updateMonitorConfigChips();
   }
 
+  /** 将广播回来的显示选项应用到表单（不触发 change 事件） */
+  function applySettingsToForm(settings) {
+    if (settings.showTimestamp !== undefined && optTimestamp) { optTimestamp.checked = !!settings.showTimestamp; }
+    if (settings.hexMode !== undefined && optHex) { optHex.checked = !!settings.hexMode; }
+    if (settings.lineEnding !== undefined && lineEndingSelect) { lineEndingSelect.value = settings.lineEnding; }
+    if (settings.encoding !== undefined && encodingSelect) { encodingSelect.value = settings.encoding === 'gbk' ? 'gbk' : 'utf8'; }
+    if (settings.rxIdleWrapMs !== undefined && rxIdleWrapInput) {
+      rxIdleWrapInput.value = String(Math.max(1, Math.min(60000, Math.floor(settings.rxIdleWrapMs) || 20)));
+    }
+  }
+
+  // ---- 跨视口 UI 状态同步（侧边栏 ↔ 编辑器面板）----
+  /** 收集当前视口的完整 UI 状态（显示选项 + 发送选项 + 视图选项 + 串口配置表单） */
+  function collectUiState() {
+    return {
+      showTimestamp: !!optTimestamp?.checked,
+      hexMode: !!optHex?.checked,
+      lineEnding: lineEndingSelect?.value || 'none',
+      encoding: encodingSelect?.value || 'utf8',
+      rxIdleWrapMs: Math.max(1, parseInt(rxIdleWrapInput?.value || '20', 10) || 20),
+      hexSend: !!optHexSend?.checked,
+      periodicEnabled: !!optPeriodicSend?.checked,
+      periodicInterval: Math.max(10, parseInt(periodicIntervalInput?.value || '1000', 10) || 1000),
+      echo: !!optEcho?.checked,
+      autoScroll: !!optAutoScroll?.checked,
+      frozenLog,
+      logFilter: logSearchInput?.value || '',
+      config: collectCurrentConfig(),
+    };
+  }
+
+  function broadcastUiState() {
+    if (!activeMonitorId) { return; }
+    const state = collectUiState();
+    bucketFor(activeMonitorId).ui = state; // 本视口即时入桶
+    vscode.postMessage({ type: 'uiStateChange', monitorId: activeMonitorId, state });
+  }
+
+  /** 应用另一视口同步来的 UI 状态（程序赋值不触发事件，无回环） */
+  function applyUiStateSync(state) {
+    if (!state) { return; }
+    applySettingsToForm(state);
+    if (optHexSend) { optHexSend.checked = !!state.hexSend; updateSendPlaceholder(); }
+    // 周期发送只同步勾选/数值显示；定时器仅在发起视口运行（避免双发）
+    if (optPeriodicSend) { optPeriodicSend.checked = !!state.periodicEnabled; }
+    if (periodicIntervalInput && typeof state.periodicInterval === 'number') {
+      periodicIntervalInput.value = String(state.periodicInterval);
+    }
+    if (optEcho) { optEcho.checked = !!state.echo; }
+    if (optAutoScroll) { optAutoScroll.checked = !!state.autoScroll; }
+    frozenLog = !!state.frozenLog;
+    updateFreezeButton();
+    if (typeof state.logFilter === 'string' && logSearchInput) {
+      logSearchInput.value = state.logFilter;
+      activeLogFilter = state.logFilter.trim().toLowerCase();
+    }
+    if (state.config) {
+      applyConfigToInputs(state.config);
+      const bucket = activeBucket();
+      bucket.config = { ...(bucket.config || {}), ...state.config };
+    }
+    saveState();
+    renderLogArea(true);
+  }
+
   function persistCurrentConfigDraft() {
-    vscode.postMessage({ type: 'saveConfig', config: collectCurrentConfig() });
+    if (!activeMonitorId) { return; }
+    vscode.postMessage({ type: 'saveConfig', monitorId: activeMonitorId, config: collectCurrentConfig() });
   }
 
   function persistQuickCommands() {
@@ -1033,7 +1020,7 @@
       button.addEventListener('click', () => {
         sendData(command.value, !!command.hexSend);
       });
-      button.disabled = !connected;
+      button.disabled = !activeBucket().connected;
       quickCommandList.appendChild(button);
     });
     updateSendControlsDisabled();
@@ -1106,47 +1093,59 @@
   }
 
   function doSend(selectAfterSend = true) {
-    const text = sendInput?.value || '';
-    if (!text.trim()) {
-      return;
-    }
-    if (!connected) {
-      pendingSendAfterConnect = true;
-      const config = collectCurrentConfig();
-      vscode.postMessage({ type: 'connect', ...config });
-      vscode.postMessage({ type: 'saveConfig', config });
-      return;
-    }
-    sendData(text, !!optHexSend?.checked);
+    doSendFor(activeMonitorId, selectAfterSend);
     if (selectAfterSend) {
       sendInput?.select();
     }
   }
 
+  function doSendFor(monitorId, selectAfterSend = true) {
+    const bucket = bucketFor(monitorId);
+    const text = (monitorId === activeMonitorId && sendInput) ? sendInput.value : bucket.sendDraft;
+    if (!text || !text.trim()) {
+      return;
+    }
+    if (!bucket.connected) {
+      bucket.pendingSendAfterConnect = true;
+      const config = bucket.config || collectCurrentConfig();
+      vscode.postMessage({ type: 'connect', monitorId, ...config });
+      return;
+    }
+    sendDataFor(monitorId, text, !!optHexSend?.checked);
+    void selectAfterSend;
+  }
+
   function sendData(text, hexSend) {
-    if (!connected) {
+    sendDataFor(activeMonitorId, text, hexSend);
+  }
+
+  function sendDataFor(monitorId, text, hexSend) {
+    const bucket = bucketFor(monitorId);
+    if (!bucket.connected) {
       return;
     }
     const payload = hexSend ? text : unescapeSendText(text);
-    vscode.postMessage({ type: 'sendData', text: payload, hexSend });
+    vscode.postMessage({ type: 'sendData', monitorId, text: payload, hexSend });
 
-    if (optEcho?.checked) {
+    if (monitorId === activeMonitorId && optEcho?.checked) {
       const body = optTimestamp?.checked
         ? payload.split('\n').map((line) => `${formatLogTimestamp()} ${line}`).join('\n')
         : payload;
-      appendLogEntry(`TX>> ${body}`, 'echo');
+      appendLogEntry(`TX>> ${body}`, 'echo', monitorId);
     }
 
-    const historyIndex = sendHistory.indexOf(text);
+    const historyIndex = bucket.sendHistory.indexOf(text);
     if (historyIndex !== -1) {
-      sendHistory.splice(historyIndex, 1);
+      bucket.sendHistory.splice(historyIndex, 1);
     }
-    sendHistory.unshift(text);
-    if (sendHistory.length > MAX_HISTORY) {
-      sendHistory.pop();
+    bucket.sendHistory.unshift(text);
+    if (bucket.sendHistory.length > MAX_HISTORY) {
+      bucket.sendHistory.pop();
     }
-    updateHistorySelect();
-    vscode.postMessage({ type: 'saveSendHistory', history: sendHistory });
+    if (monitorId === activeMonitorId) {
+      updateHistorySelect();
+    }
+    vscode.postMessage({ type: 'saveSendHistory', monitorId, history: bucket.sendHistory });
     saveState();
   }
 
@@ -1155,6 +1154,7 @@
       return;
     }
 
+    const sendHistory = activeBucket().sendHistory;
     historyMenu.innerHTML = '';
     if (sendHistory.length === 0) {
       const empty = document.createElement('div');
@@ -1189,7 +1189,7 @@
         event.stopPropagation();
         sendHistory.splice(index, 1);
         updateHistorySelect();
-        vscode.postMessage({ type: 'saveSendHistory', history: sendHistory });
+        vscode.postMessage({ type: 'saveSendHistory', monitorId: activeMonitorId, history: sendHistory });
       });
 
       row.appendChild(textSpan);
@@ -1198,15 +1198,17 @@
     });
   }
 
-  function appendLogEntry(text, kind) {
-    logEntries.push({ text, kind });
-    logEntriesBytes += utf8ByteLength(text);
+  /** 追加日志到指定监视器的桶（默认当前激活监视器） */
+  function appendLogEntry(text, kind, monitorId) {
+    const bucket = bucketFor(monitorId || activeMonitorId);
+    bucket.logEntries.push({ text, kind });
+    bucket.logEntriesBytes += utf8ByteLength(text);
     // 总字节数上限（Buffer KB 配置），从最旧端丢弃（至少保留最新一条）
-    while (logEntries.length > 1 && logEntriesBytes > logRenderBytesLimit()) {
-      logEntriesBytes -= utf8ByteLength(logEntries[0].text);
-      logEntries.shift();
+    while (bucket.logEntries.length > 1 && bucket.logEntriesBytes > logRenderBytesLimit()) {
+      bucket.logEntriesBytes -= utf8ByteLength(bucket.logEntries[0].text);
+      bucket.logEntries.shift();
     }
-    renderLogArea(); // 冻结/选中时内部自动跳过
+    renderLogArea(); // 冻结/选中时内部自动跳过；非激活桶静默累积
   }
 
   /** 日志区内是否有未收起的文本选区（innerHTML 重建会摧毁选区） */
@@ -1251,22 +1253,25 @@
     });
 
     // 终端输入行与设备实时行合并为同一行：本地输入直接接在设备提示符后
-    // （如 "msh > ls▌"）；历史/Tab 同步后设备行已包含命令，只在剩余部分上
-    // 叠加输入与光标，避免出现两条内容不一致的行。设备实时行为空时回退 "> " 前缀
-    const before = terminalBuffer.slice(0, terminalCaret);
-    const after = terminalBuffer.slice(terminalCaret);
+    // （如 "msh > ls▌"）；状态来自扩展侧 TerminalSession 快照。
+    // 设备实时行为空时回退 "> " 前缀
+    const terminal = activeBucket().terminal;
+    const liveLine = terminal.liveLine;
+    const deviceLine = terminal.deviceLine;
+    const before = terminal.buffer.slice(0, terminal.caret);
+    const after = terminal.buffer.slice(terminal.caret);
     const caretText = `${before}\u258c${after}`;
     const liveDiv = document.createElement('div');
     liveDiv.className = 'log-line rx-live-line';
-    if (!rxLine.text) {
+    if (!liveLine) {
       liveDiv.textContent = `> ${caretText}`;
-    } else if (terminalDeviceLine !== null && rxLine.text.endsWith(terminalDeviceLine)) {
-      liveDiv.textContent = rxLine.text.slice(0, -terminalDeviceLine.length) + caretText;
-    } else if (terminalDeviceLine !== null) {
+    } else if (deviceLine !== null && liveLine.endsWith(deviceLine)) {
+      liveDiv.textContent = liveLine.slice(0, -deviceLine.length) + caretText;
+    } else if (deviceLine !== null) {
       // 同步态但实时行与同步命令不匹配（罕见分片）：信任设备行，光标置于行尾
-      liveDiv.textContent = `${rxLine.text}\u258c`;
+      liveDiv.textContent = `${liveLine}\u258c`;
     } else {
-      liveDiv.textContent = rxLine.text + caretText;
+      liveDiv.textContent = liveLine + caretText;
     }
     logArea.appendChild(liveDiv);
 
@@ -1277,6 +1282,7 @@
   }
 
   function getVisibleEntries() {
+    const logEntries = activeBucket().logEntries;
     if (!activeLogFilter) {
       return logEntries;
     }
@@ -1376,83 +1382,161 @@
       }
 
       case 'updateStatus': {
-        connected = !!message.connected;
+        const id = message.monitorId;
+        if (!id) { break; }
+        const bucket = bucketFor(id);
+        bucket.connected = !!message.connected;
+        bucket.statusConnected = bucket.connected;
+        bucket.statusPort = message.port || '';
+        bucket.statusBaud = message.baudRate || 0;
+        bucket.statusParity = message.parity || 'none';
+        bucket.statusText = bucket.connected
+          ? `${bucket.statusPort} @ ${bucket.statusBaud} ${PARITY_LABELS[bucket.statusParity] ?? PARITY_LABELS.none}`
+          : 'Disconnected';
+        if (!bucket.connected) {
+          bucket.pendingSendAfterConnect = false;
+          bucket.terminal = { liveLine: '', buffer: '', caret: 0, deviceLine: null };
+          if (periodicTimer && periodicMonitorId === id) {
+            // 周期发送的发起监视器断开：停止并同步复选框
+            stopPeriodicSend();
+            syncPeriodicCheckbox();
+          }
+        }
+        // 连接状态即时同步到标签（圆点）
+        const meta = monitors.find((m) => m.id === id);
+        if (meta) { meta.connected = bucket.connected; }
+        renderMonitors();
+        if (id !== activeMonitorId) { break; }
+
         if (statusDot) {
-          statusDot.className = connected
+          statusDot.className = bucket.connected
             ? 'status-indicator status-connected'
             : 'status-indicator status-disconnected';
         }
         if (statusText) {
-          statusText.textContent = connected
-            ? `${message.port} @ ${message.baudRate} ${PARITY_LABELS[message.parity] ?? PARITY_LABELS.none}`
-            : 'Disconnected';
+          statusText.textContent = bucket.statusText;
         }
         updateConnectionButtons();
-
         [portSelect, baudratePresetSelect, baudrateInput, databitsSelect, paritySelect, stopbitsSelect, flowControlSelect].forEach((element) => {
-          if (element) { element.disabled = connected; }
+          if (element) { element.disabled = bucket.connected; }
         });
-        if (!connected) {
-          pendingSendAfterConnect = false;
-          pendingTerminalLine = null;
-          tabSync.active = false;
-          historySync = false;
-          terminalDeviceLine = null; // 断开后设备编辑行状态未知，按为空处理
-          clearSyncTimers();
-          stopPeriodicSend();
-          if (optPeriodicSend) { optPeriodicSend.checked = false; }
-        }
-        if (connected && pendingSendAfterConnect) {
-          pendingSendAfterConnect = false;
+        if (bucket.connected && bucket.pendingSendAfterConnect) {
+          bucket.pendingSendAfterConnect = false;
           doSend();
-        }
-        if (!connected) {
-          pendingTerminalLine = null;
-        }
-        if (connected && pendingTerminalLine !== null) {
-          const bytes = pendingTerminalLine;
-          pendingTerminalLine = null;
-          // 终端字节自带行尾，与立即发送路径一致显式 none，避免 End 选项追加换行
-          vscode.postMessage({ type: 'sendData', text: bytes, hexSend: false, lineEnding: 'none' });
         }
         updateSendControlsDisabled();
         updateEmptyState();
         break;
       }
 
-      case 'appendLog': {
-        const raw = String(message.text || '');
-        // ANSI clear screen (device response to commands like `clear`)
-        if (/\u001b\[2J/.test(raw)) {
-          logEntries = [];
-          logEntriesBytes = 0;
-          rxSim.reset();
+      case 'logLines': {
+        if (!message.monitorId || !Array.isArray(message.lines)) { break; }
+        // 时间戳跟随"该行所属监视器"的配置（而非当前标签的复选框）：
+        // 周期发送在后台监视器上运行时，切走标签也能正确盖时间戳
+        const cfg = bucketFor(message.monitorId).config;
+        const useTs = cfg ? !!cfg.showTimestamp : !!optTimestamp?.checked;
+        for (const line of message.lines) {
+          const text = useTs ? `${formatLogTimestamp()} ${line}` : line;
+          appendLogEntry(text, message.kind === 'echo' ? 'echo' : 'text', message.monitorId);
         }
-        // 只剥 OSC（窗口标题等）；CSI 序列保留给行模拟器按语义应用——
-        // 若像之前一样全部剥掉，msh 历史切换的 ESC[2K 会被丢弃，redraw 覆盖后
-        // 日志行残留旧命令尾巴（"help" 切 "ls" 显示成 "lsls"残迹/"lslp"）
-        const cleaned = raw.replace(/\u001b\][^\u0007]*(\u0007|\u001b\\)/g, '');
-        if (cleaned.includes('MCP TX>> ')) {
-          appendLogEntry(cleaned.replace(/\u001b\[[0-9;?]*[A-Za-z]/g, '').trimEnd(), 'echo');
-        } else {
-          feedRx(cleaned);
+        if (optAutoScroll?.checked && !frozenLog && message.monitorId === activeMonitorId) {
+          scrollLogToBottom();
         }
         break;
       }
 
-      case 'clearLog': {
-        logEntries = [];
-        logEntriesBytes = 0;
-        rxSim.reset();
-        terminalBuffer = '';
-        terminalCaret = 0;
-        tabSync.active = false;
-        historySync = false;
-        terminalDeviceLine = null;
-        clearSyncTimers();
+      case 'settingsSync': {
+        // 任一视口（侧边栏/编辑器面板）修改显示选项后，扩展广播同步所有视口
+        if (!message.monitorId || !message.settings) { break; }
+        const bucket = bucketFor(message.monitorId);
+        bucket.config = { ...(bucket.config || {}), ...message.settings };
+        if (message.monitorId === activeMonitorId) {
+          applySettingsToForm(message.settings);
+        }
+        break;
+      }
+
+      case 'uiStateSync': {
+        // 另一视口的完整 UI 状态（显示/发送/视图选项 + 串口配置表单）
+        if (!message.monitorId || !message.state) { break; }
+        const bucket = bucketFor(message.monitorId);
+        bucket.ui = message.state;
+        bucket.config = { ...(bucket.config || {}), ...(message.state.config || {}) };
+        if (message.monitorId === activeMonitorId) {
+          applyUiStateSync(message.state);
+        }
+        break;
+      }
+
+      case 'quickCommandsSync': {
+        // 另一视口增删改快捷指令后同步
+        if (Array.isArray(message.commands)) {
+          quickCommands = message.commands;
+          renderQuickCommands();
+        }
+        break;
+      }
+
+      case 'terminalState': {
+        if (!message.monitorId || !message.state) { break; }
+        bucketFor(message.monitorId).terminal = message.state;
+        if (message.monitorId === activeMonitorId) {
+          renderLogArea();
+          if (optAutoScroll?.checked && !frozenLog) {
+            scrollLogToBottom();
+          }
+        }
+        break;
+      }
+
+      case 'clearScreen': {
+        if (!message.monitorId) { break; }
+        const bucket = bucketFor(message.monitorId);
+        bucket.logEntries = [];
+        bucket.logEntriesBytes = 0;
         renderLogArea(true);
-        if (rxCountEl) { rxCountEl.textContent = 'RX: 0'; }
-        if (txCountEl) { txCountEl.textContent = 'TX: 0'; }
+        break;
+      }
+
+      case 'appendError': {
+        if (message.monitorId && message.message) {
+          appendLogEntry(`[ERROR] ${message.message}`, 'echo', message.monitorId);
+        }
+        break;
+      }
+
+      case 'monitorsChanged': {
+        if (!Array.isArray(message.monitors)) { break; }
+        applyMonitors(message.monitors);
+        break;
+      }
+
+      case 'renameResult': {
+        if (!message.ok && message.error) {
+          vscode.postMessage({ type: 'monitorLimitReached', message: message.error });
+        }
+        // 成功时 monitorsChanged 会带新名称重渲染标签
+        break;
+      }
+
+      case 'monitorLimitReached': {
+        const text = message.message || 'Monitor limit reached';
+        if (statusText) { statusText.textContent = text; }
+        break;
+      }
+
+      case 'clearLog': {
+        const id = message.monitorId || activeMonitorId;
+        const bucket = bucketFor(id);
+        bucket.logEntries = [];
+        bucket.logEntriesBytes = 0;
+        bucket.rxCount = 0;
+        bucket.txCount = 0;
+        if (id === activeMonitorId) {
+          renderLogArea(true);
+          if (rxCountEl) { rxCountEl.textContent = 'RX: 0'; }
+          if (txCountEl) { txCountEl.textContent = 'TX: 0'; }
+        }
         break;
       }
 
@@ -1465,23 +1549,36 @@
       }
 
       case 'updateCounters': {
-        if (rxCountEl) { rxCountEl.textContent = 'RX: ' + formatBytes(message.rx); }
-        if (txCountEl) { txCountEl.textContent = 'TX: ' + formatBytes(message.tx); }
+        const bucket = message.monitorId ? bucketFor(message.monitorId) : null;
+        if (bucket) {
+          bucket.rxCount = message.rx || 0;
+          bucket.txCount = message.tx || 0;
+        }
+        if (!message.monitorId || message.monitorId === activeMonitorId) {
+          if (rxCountEl) { rxCountEl.textContent = 'RX: ' + formatBytes(message.rx || 0); }
+          if (txCountEl) { txCountEl.textContent = 'TX: ' + formatBytes(message.tx || 0); }
+        }
         break;
       }
 
-      case 'restoreConfig': {
-        const config = message.config;
-        if (config) {
-          applyConfigToInputs(config);
-          if (config.port) {
-            pendingPort = config.port;
+      case 'restoreState': {
+        if (Array.isArray(message.monitors) && message.monitors.length > 0) {
+          // 每个监视器的配置与发送历史入桶
+          for (const info of message.monitors) {
+            const bucket = bucketFor(info.id);
+            bucket.config = info.config || null;
+            bucket.ui = info.ui || null;
+            bucket.sendHistory = Array.isArray(info.sendHistory) ? info.sendHistory : [];
+            if (info.connected) {
+              bucket.connected = true;
+              bucket.statusConnected = true;
+              bucket.statusPort = info.port || '';
+              bucket.statusBaud = info.baudRate || 0;
+              bucket.statusParity = info.parity || 'none';
+              bucket.statusText = `${bucket.statusPort} @ ${bucket.statusBaud} ${PARITY_LABELS[bucket.statusParity] ?? PARITY_LABELS.none}`;
+            }
           }
-        }
-
-        if (Array.isArray(message.sendHistory)) {
-          sendHistory = message.sendHistory;
-          updateHistorySelect();
+          applyMonitors(message.monitors, { restore: true });
         }
         if (Array.isArray(message.quickCommands)) {
           quickCommands = message.quickCommands;
@@ -1497,9 +1594,221 @@
     }
   });
 
+  // ---- 多监视器标签栏 ----
+  function applyMonitors(nextMonitors, options) {
+    const restore = !!(options && options.restore);
+    const previousActiveId = activeMonitorId;
+    const previousIds = new Set(monitors.map((m) => m.id));
+    // 在替换前列表前记录激活标签的旧位置（删除后按原位钳制选邻居）
+    const oldPos = [...monitors]
+      .sort((a, b) => a.index - b.index)
+      .findIndex((m) => m.id === previousActiveId);
+    monitors = nextMonitors;
+
+    if (!monitors.some((m) => m.id === activeMonitorId)) {
+      // 激活监视器被删除（或首次恢复）：原位停留（钳制到新列表，删最右则落到新最右）。
+      // force：activeMonitorId 即便恰好等于目标也必须完整切换（旧 UI 属于已删除的标签）
+      const sortedNew = [...monitors].sort((a, b) => a.index - b.index);
+      const targetPos = Math.max(0, Math.min(oldPos < 0 ? 0 : oldPos, sortedNew.length - 1));
+      const targetId = (sortedNew[targetPos] || monitors[0]).id;
+      switchMonitor(targetId, { restore, force: true });
+    } else if (!restore) {
+      // 新建监视器：自动切换到它
+      const created = monitors.find((m) => !previousIds.has(m.id));
+      if (created) {
+        switchMonitor(created.id);
+      } else {
+        renderMonitors();
+      }
+    } else {
+      renderMonitors();
+    }
+  }
+
+  function switchMonitor(id, options) {
+    const restore = !!(options && options.restore);
+    const force = !!(options && options.force);
+    if (!restore && !force && id === activeMonitorId) { return; }
+    // 保存当前发送框草稿与表单配置到旧桶
+    if (activeMonitorId) {
+      const oldBucket = bucketFor(activeMonitorId);
+      if (sendInput) { oldBucket.sendDraft = sendInput.value; }
+      oldBucket.config = collectCurrentConfig();
+    }
+    // 周期发送继续跑在原监视器上（切换不中断），复选框按"当前标签是否为发起者"显示
+    activeMonitorId = id;
+    const bucket = bucketFor(id);
+    // 首次恢复时不覆盖 restoreWebviewState 恢复的发送框内容（桶草稿为空则保持现状）
+    if (sendInput && (bucket.sendDraft || !restore)) {
+      sendInput.value = bucket.sendDraft || '';
+    }
+    if (bucket.config) {
+      applyConfigToInputs(bucket.config); // 表单切换为该监视器的配置
+    }
+    if (bucket.ui) {
+      applyUiStateSync(bucket.ui); // 恢复该监视器上次的完整 UI 状态（含视图选项）
+    }
+    if (statusDot) {
+      statusDot.className = bucket.connected
+        ? 'status-indicator status-connected'
+        : 'status-indicator status-disconnected';
+    }
+    if (statusText) { statusText.textContent = bucket.statusText; }
+    if (rxCountEl) { rxCountEl.textContent = 'RX: ' + formatBytes(bucket.rxCount); }
+    if (txCountEl) { txCountEl.textContent = 'TX: ' + formatBytes(bucket.txCount); }
+    [portSelect, baudratePresetSelect, baudrateInput, databitsSelect, paritySelect, stopbitsSelect, flowControlSelect].forEach((element) => {
+      if (element) { element.disabled = bucket.connected; }
+    });
+    updateConnectionButtons();
+    updateHistorySelect();
+    updateSendControlsDisabled();
+    syncPeriodicCheckbox();
+    renderLogArea(true);
+    renderMonitors();
+  }
+
+  function renderMonitors() {
+    if (!monitorTabs) { return; }
+    monitorTabs.innerHTML = '';
+    for (const meta of monitors) {
+      const tab = document.createElement('button');
+      tab.type = 'button';
+      tab.className = 'monitor-tab' + (meta.id === activeMonitorId ? ' active' : '');
+      tab.title = `${meta.index}=${meta.name}`;
+
+      const dot = document.createElement('span');
+      dot.className = 'status-indicator ' + (meta.connected ? 'status-connected' : 'status-disconnected');
+      tab.appendChild(dot);
+
+      const label = document.createElement('span');
+      label.className = 'monitor-tab-label';
+      label.textContent = `${meta.index}=${meta.name}`;
+      tab.appendChild(label);
+
+      // 仅剩一个监视器时不可删除（注册表最少保留 1 个）——不渲染删除按钮
+      if (monitors.length > 1) {
+        const close = document.createElement('button');
+        close.type = 'button';
+        close.className = 'monitor-tab-close';
+        close.textContent = '\u00d7';
+        close.title = 'Delete this monitor';
+        close.addEventListener('click', (event) => {
+          event.stopPropagation();
+          vscode.postMessage({ type: 'deleteMonitor', monitorId: meta.id });
+        });
+        tab.appendChild(close);
+      }
+
+      tab.addEventListener('click', () => {
+        switchMonitor(meta.id);
+      });
+      tab.addEventListener('dblclick', () => {
+        startTabRename(tab, meta);
+      });
+      monitorTabs.appendChild(tab);
+    }
+    updateTabsSlider();
+  }
+
+  // 标签栏滚轮横向滚动（原生滚动条隐藏，顶部用自绘滑块）
+  monitorTabs?.addEventListener('wheel', (event) => {
+    if (monitorTabs.scrollWidth <= monitorTabs.clientWidth) { return; }
+    event.preventDefault();
+    monitorTabs.scrollLeft += event.deltaY !== 0 ? event.deltaY : event.deltaX;
+  }, { passive: false });
+
+  /** 自绘滑块：跟随滚动位置，可拖拽/点击跳转（VS Code 选项卡风格，无箭头） */
+  function updateTabsSlider() {
+    if (!monitorTabs || !monitorTabsSlider || !monitorTabsThumb) { return; }
+    const overflow = monitorTabs.scrollWidth - monitorTabs.clientWidth;
+    if (overflow <= 0) {
+      monitorTabsSlider.classList.remove('visible');
+      return;
+    }
+    monitorTabsSlider.classList.add('visible');
+    const trackWidth = monitorTabsSlider.clientWidth;
+    const thumbWidth = Math.max(24, (monitorTabs.clientWidth / monitorTabs.scrollWidth) * trackWidth);
+    const maxLeft = Math.max(0, trackWidth - thumbWidth);
+    const left = (monitorTabs.scrollLeft / overflow) * maxLeft;
+    monitorTabsThumb.style.width = `${thumbWidth}px`;
+    monitorTabsThumb.style.left = `${left}px`;
+  }
+
+  monitorTabs?.addEventListener('scroll', updateTabsSlider, { passive: true });
+  window.addEventListener('resize', updateTabsSlider);
+
+  if (monitorTabsSlider && monitorTabs) {
+    let sliderDragging = false;
+    const scrollBySlider = (clientX) => {
+      const rect = monitorTabsSlider.getBoundingClientRect();
+      const ratio = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
+      monitorTabs.scrollLeft = ratio * (monitorTabs.scrollWidth - monitorTabs.clientWidth);
+    };
+    monitorTabsSlider.addEventListener('mousedown', (event) => {
+      sliderDragging = true;
+      monitorTabsSlider.classList.add('force-visible');
+      if (monitorTabsThumb) { monitorTabsThumb.classList.add('dragging'); }
+      scrollBySlider(event.clientX);
+      event.preventDefault();
+    });
+    document.addEventListener('mousemove', (event) => {
+      if (sliderDragging) { scrollBySlider(event.clientX); }
+    });
+    document.addEventListener('mouseup', () => {
+      if (sliderDragging) {
+        sliderDragging = false;
+        monitorTabsSlider.classList.remove('force-visible');
+        if (monitorTabsThumb) { monitorTabsThumb.classList.remove('dragging'); }
+      }
+    });
+  }
+
+  monitorAddBtn?.addEventListener('click', () => {
+    vscode.postMessage({ type: 'addMonitor' });
+  });
+
+  /** 标签内联重命名：Enter 确认 / Esc 取消 / 失焦回退 */
+  function startTabRename(tab, meta) {
+    if (tab.querySelector('.monitor-tab-rename-input')) { return; }
+    const label = tab.querySelector('.monitor-tab-label');
+    if (!label) { return; }
+    const input = document.createElement('input');
+    input.className = 'monitor-tab-rename-input';
+    input.type = 'text';
+    input.value = meta.name;
+    input.maxLength = 64;
+    label.replaceWith(input);
+    input.focus();
+    input.select();
+
+    const commit = () => {
+      const next = input.value.trim();
+      if (next && next !== meta.name) {
+        vscode.postMessage({ type: 'renameMonitor', monitorId: meta.id, name: next });
+        return; // 失败时 renameResult → statusText 提示，monitorsChanged 重渲染恢复标签
+      }
+      renderMonitors();
+    };
+
+    input.addEventListener('keydown', (event) => {
+      event.stopPropagation();
+      if (event.key === 'Enter') {
+        event.preventDefault();
+        commit();
+      } else if (event.key === 'Escape') {
+        event.preventDefault();
+        renderMonitors();
+      }
+    });
+    input.addEventListener('blur', () => {
+      commit();
+    });
+  }
+
   renderQuickCommands();
   updateHistorySelect();
   updateConnectionButtons();
   updateFreezeButton();
   updateEmptyState();
+  renderMonitors();
 })();

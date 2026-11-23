@@ -1,8 +1,8 @@
 import * as crypto from 'crypto';
 import * as vscode from 'vscode';
-import type { SerialRuntime } from './serial-manager';
+import { MonitorHost, MonitorHostEvent, MonitorViewInfo } from './monitor-host';
 import { PortAutoRefresh } from './port-auto-refresh';
-import { DEFAULT_CONFIG, SerialConfig } from './types';
+import { SerialConfig } from './types';
 
 const DEFAULT_BAUDRATES = [
   4800, 9600, 19200, 38400, 57600, 74880,
@@ -40,18 +40,63 @@ export class SerialPanelProvider implements vscode.WebviewViewProvider, vscode.D
   private _view?: vscode.WebviewView;
   private _panel?: vscode.WebviewPanel;
   private readonly _portAutoRefresh: PortAutoRefresh;
+  /** 每监视器最近一次广播的 UI 状态（新视口打开时随 restoreState 下发） */
+  private readonly _uiStates = new Map<string, Record<string, unknown>>();
 
   constructor(
     private readonly _context: vscode.ExtensionContext,
-    private readonly _serialManager: SerialRuntime,
+    private readonly _host: MonitorHost,
     private readonly _onStatusChange: (connected: boolean, portPath?: string, baudRate?: number) => void,
   ) {
     this._portAutoRefresh = new PortAutoRefresh(
-      this._serialManager,
+      this._host.primary().manager,
       (ports) => {
         this.postMessage({ type: 'updatePorts', ports });
       },
     );
+  }
+
+  /** MonitorHost 事件 → 组播到所有视口（侧边栏 + 编辑器面板） */
+  public handleHostEvent(event: MonitorHostEvent): void {
+    switch (event.type) {
+      case 'metas':
+        this.postMessage({ type: 'monitorsChanged', monitors: event.monitors });
+        break;
+      case 'status':
+        this.postMessage({
+          type: 'updateStatus',
+          monitorId: event.monitorId,
+          connected: event.connected,
+          port: event.port,
+          baudRate: event.baudRate,
+          parity: this._host.runtime(event.monitorId)?.manager.config.parity ?? 'none',
+        });
+        this._onStatusChange(event.connected, event.port, event.baudRate);
+        break;
+      case 'logLines':
+        this.postMessage({ type: 'logLines', monitorId: event.monitorId, lines: event.lines, kind: event.kind });
+        break;
+      case 'terminalState':
+        this.postMessage({ type: 'terminalState', monitorId: event.monitorId, state: event.state });
+        break;
+      case 'counters':
+        this.postMessage({ type: 'updateCounters', monitorId: event.monitorId, rx: event.rx, tx: event.tx });
+        break;
+      case 'error':
+        this.postMessage({ type: 'appendError', monitorId: event.monitorId, message: event.message });
+        break;
+      case 'clearScreen':
+        this.postMessage({ type: 'clearScreen', monitorId: event.monitorId });
+        break;
+      case 'terminalConnectRequest': {
+        // 终端在未连接时按键：按该监视器当前配置发起连接，连接成功后由 host 排空待发字节
+        const rt = this._host.runtime(event.monitorId);
+        if (rt && !rt.manager.isConnected) {
+          void this._host.connect(event.monitorId, rt.meta.config);
+        }
+        break;
+      }
+    }
   }
 
   dispose(): void {
@@ -111,7 +156,7 @@ export class SerialPanelProvider implements vscode.WebviewViewProvider, vscode.D
   public async refreshPortList(options?: { forceFull?: boolean; silent?: boolean }): Promise<void> {
     try {
       if (options?.forceFull) {
-        const ports = await this._serialManager.listPorts({
+        const ports = await this._host.primary().manager.listPorts({
           metadata: 'full',
           forceMetadata: true,
         });
@@ -143,10 +188,12 @@ export class SerialPanelProvider implements vscode.WebviewViewProvider, vscode.D
     return Math.max(1, Math.min(10240, Math.floor(kb) || 1024));
   }
 
-  /** 配置变化：同步 manager 与已打开的 webview */
+  /** 配置变化：同步所有监视器与已打开的 webview */
   public handleLogBufferConfigChange(): void {
     const kb = this._readLogBufferKB();
-    this._serialManager.updateSettings({ logBufferKB: kb });
+    for (const rt of this._host.list().map((info) => this._host.runtime(info.id))) {
+      rt?.manager.updateSettings({ logBufferKB: kb });
+    }
     this.postMessage({ type: 'updateLogBuffer', logBufferKB: kb });
   }
 
@@ -165,24 +212,6 @@ export class SerialPanelProvider implements vscode.WebviewViewProvider, vscode.D
 
   public clearPanel(): void {
     this._panel = undefined;
-  }
-
-  private _saveConfig(partial: Partial<SerialConfig>): void {
-    const saved = this._context.globalState.get<SerialConfig>('serialConfig', { ...DEFAULT_CONFIG });
-    void this._context.globalState.update('serialConfig', { ...saved, ...partial });
-  }
-
-  private _loadConfig(): SerialConfig {
-    const saved = this._context.globalState.get<Partial<SerialConfig>>('serialConfig', {});
-    return { ...DEFAULT_CONFIG, ...saved };
-  }
-
-  private _saveSendHistory(history: string[]): void {
-    void this._context.globalState.update('sendHistory', history.slice(0, MAX_SEND_HISTORY));
-  }
-
-  private _loadSendHistory(): string[] {
-    return this._context.globalState.get<string[]>('sendHistory', []);
   }
 
   private _saveSerialProfiles(profiles: SerialProfile[]): void {
@@ -239,77 +268,108 @@ export class SerialPanelProvider implements vscode.WebviewViewProvider, vscode.D
   }
 
   private _initializeView(webview: vscode.Webview): void {
-    const savedConfig = this._loadConfig();
-    // 缓冲上限来自后台配置项 serialagent.logBufferKB（优先于历史 globalState 存值）
-    savedConfig.logBufferKB = this._readLogBufferKB();
-    this._serialManager.updateSettings(savedConfig);
-    this._serialManager.setCallbacks({
-      onLog: (text) => {
-        this.postMessage({ type: 'appendLog', text });
-      },
-      onStatus: (connected, portPath, baudRate) => {
-        this.postMessage({
-          type: 'updateStatus',
-          connected,
-          port: portPath ?? '',
-          baudRate: baudRate ?? 0,
-          parity: this._serialManager.config.parity,
-        });
-        this._onStatusChange(connected, portPath, baudRate);
-      },
-      onError: (msg) => {
-        vscode.window.showErrorMessage(`[Serial Agent Plus] ${msg}`);
-        this.postMessage({ type: 'appendLog', text: `[ERROR] ${msg}\n` });
-      },
-      onCounterUpdate: (rx, tx) => {
-        this.postMessage({ type: 'updateCounters', rx, tx });
-      },
-    });
+    // 缓冲上限来自后台配置项 serialagent.logBufferKB，应用到所有监视器
+    this.handleLogBufferConfigChange();
 
     this._setupWebviewMessageHandler(webview);
 
     void this.refreshPortList({ forceFull: true, silent: true });
 
+    // 监视器列表 + 各自配置与发送历史（webview 按 monitorId 分桶恢复）
+    const monitors = this._host.list().map((info) => {
+      const rt = this._host.runtime(info.id)!;
+      return {
+        ...info,
+        config: rt.manager.config,
+        sendHistory: rt.meta.sendHistory,
+        ui: this._uiStates.get(info.id) ?? null,
+      };
+    });
     this.postMessage({
-      type: 'restoreConfig',
-      config: savedConfig,
-      sendHistory: this._loadSendHistory(),
+      type: 'restoreState',
+      monitors,
       serialProfiles: this._loadSerialProfiles(),
       quickCommands: this._loadQuickCommands(),
       uiState: this._loadPanelUiState(),
     });
 
-    if (this._serialManager.isConnected) {
-      this.postMessage({
-        type: 'updateStatus',
-        connected: true,
-        port: this._serialManager.currentPath,
-        baudRate: this._serialManager.currentBaudRate,
-        parity: this._serialManager.config.parity,
-      });
-      this.postMessage({
-        type: 'updateCounters',
-        rx: this._serialManager.rxBytes,
-        tx: this._serialManager.txBytes,
-      });
+    // 已连接的监视器补充推送状态与计数（webview 恢复时默认 disconnected）
+    for (const rt of this._host.list().map((info) => this._host.runtime(info.id)!)) {
+      if (rt.manager.isConnected) {
+        this.postMessage({
+          type: 'updateStatus',
+          monitorId: rt.meta.id,
+          connected: true,
+          port: rt.manager.currentPath,
+          baudRate: rt.manager.currentBaudRate,
+          parity: rt.manager.config.parity,
+        });
+        this.postMessage({
+          type: 'updateCounters',
+          monitorId: rt.meta.id,
+          rx: rt.manager.rxBytes,
+          tx: rt.manager.txBytes,
+        });
+      }
     }
   }
 
   private _setupWebviewMessageHandler(webview: vscode.Webview): void {
     webview.onDidReceiveMessage(async (data) => {
+      const monitorId = typeof data.monitorId === 'string' ? data.monitorId : '';
       switch (data.type) {
         case 'refreshPorts': {
           await this.refreshPortList({ forceFull: true });
           break;
         }
 
+        case 'addMonitor': {
+          if (this._host.registry.canCreate()) {
+            this._host.createMonitor();
+          } else {
+            vscode.window.showWarningMessage('[Serial Agent Plus] Monitor limit reached (10)');
+          }
+          break;
+        }
+
+        case 'deleteMonitor': {
+          if (!this._host.registry.canDelete()) {
+            // 最后一个监视器不可删除：警告通知（而不是塞进串口状态栏）
+            vscode.window.showWarningMessage('[Serial Agent Plus] At least one monitor must remain');
+            break;
+          }
+          try {
+            this._host.deleteMonitor(monitorId);
+          } catch (err) {
+            vscode.window.showWarningMessage(`[Serial Agent Plus] ${err instanceof Error ? err.message : String(err)}`);
+          }
+          break;
+        }
+
+        case 'renameMonitor': {
+          try {
+            const info = this._host.renameMonitor(monitorId, String(data.name ?? ''));
+            this.postMessage({ type: 'renameResult', monitorId, ok: true, index: info.index, name: info.name });
+          } catch (err) {
+            this.postMessage({
+              type: 'renameResult',
+              monitorId,
+              ok: false,
+              error: err instanceof Error ? err.message : String(err),
+            });
+          }
+          break;
+        }
+
         case 'connect': {
+          const rt = this._host.runtime(monitorId);
+          if (!rt) { break; }
           const { port, baudRate, dataBits, parity, stopBits, flowControl } = data;
           if (!port) {
             vscode.window.showWarningMessage('[Serial Agent Plus] Please select a serial port first');
             return;
           }
-          const currentCfg = this._serialManager.config;
+          const currentCfg = rt.manager.config;
           const normalizedFlowControl = this._normalizeFlowControl(flowControl ?? currentCfg.flowControl);
           const config: SerialConfig = {
             port,
@@ -325,36 +385,49 @@ export class SerialPanelProvider implements vscode.WebviewViewProvider, vscode.D
             rxIdleWrapMs: typeof data.rxIdleWrapMs === 'number' && data.rxIdleWrapMs >= 1
               ? Math.floor(data.rxIdleWrapMs)
               : currentCfg.rxIdleWrapMs,
-            logBufferKB: currentCfg.logBufferKB,
+            logBufferKB: this._readLogBufferKB(),
           };
-          this._saveConfig(config);
-          await this._serialManager.connect(config);
+          await this._host.connect(monitorId, config);
           break;
         }
 
         case 'disconnect': {
-          await this._serialManager.disconnect();
+          const rt = this._host.runtime(monitorId);
+          if (rt) { await rt.manager.disconnect(); }
           break;
         }
 
         case 'clearLog': {
-          this._serialManager.clearLog();
-          this._serialManager.resetCounters();
-          this.postMessage({ type: 'clearLog' });
+          const rt = this._host.runtime(monitorId);
+          if (!rt) { break; }
+          rt.manager.clearLog();
+          rt.manager.resetCounters();
+          rt.session.resetEditing();
+          this.postMessage({ type: 'clearLog', monitorId });
+          break;
+        }
+
+        case 'terminalKey': {
+          const rt = this._host.runtime(monitorId);
+          if (rt) { rt.session.handleKey(data.intent); }
           break;
         }
 
         case 'sendData': {
-          const cfg = this._serialManager.config;
+          const rt = this._host.runtime(monitorId);
+          if (!rt) { break; }
+          const cfg = rt.manager.config;
           const hexSend = data.hexSend ?? false;
           const lineEnding = typeof data.lineEnding === 'string'
             ? data.lineEnding
             : cfg.lineEnding;
-          await this._serialManager.send(data.text, hexSend, lineEnding);
+          await rt.manager.send(data.text, hexSend, lineEnding);
           break;
         }
 
         case 'updateSettings': {
+          const rt = this._host.runtime(monitorId);
+          if (!rt) { break; }
           const partial: Partial<SerialConfig> = {};
           if (data.showTimestamp !== undefined) { partial.showTimestamp = data.showTimestamp; }
           if (data.hexMode !== undefined) { partial.hexMode = data.hexMode; }
@@ -364,13 +437,15 @@ export class SerialPanelProvider implements vscode.WebviewViewProvider, vscode.D
             partial.rxIdleWrapMs = Math.max(1, Math.min(60000, Math.floor(Number(data.rxIdleWrapMs) || 20)));
           }
           if (data.flowControl !== undefined) { partial.flowControl = this._normalizeFlowControl(data.flowControl); }
-          this._serialManager.updateSettings(partial);
-          this._saveConfig(partial);
+          rt.manager.updateSettings(partial);
+          this._host.registry.updateConfig(monitorId, partial);
+          // 广播到所有视口（侧边栏 + 编辑器面板）：同一监视器的显示选项保持一致
+          this.postMessage({ type: 'settingsSync', monitorId, settings: partial });
           break;
         }
 
         case 'saveSendHistory': {
-          this._saveSendHistory(data.history ?? []);
+          this._host.registry.updateSendHistory(monitorId, data.history ?? []);
           break;
         }
 
@@ -379,13 +454,29 @@ export class SerialPanelProvider implements vscode.WebviewViewProvider, vscode.D
           break;
         }
 
+        case 'uiStateChange': {
+          // 任一视口的完整 UI 状态变化：记录并广播到所有视口（同一监视器保持一致）
+          if (monitorId && data.state && typeof data.state === 'object') {
+            this._uiStates.set(monitorId, data.state as Record<string, unknown>);
+            this.postMessage({ type: 'uiStateSync', monitorId, state: data.state });
+          }
+          break;
+        }
+
         case 'saveQuickCommands': {
           this._saveQuickCommands(data.commands ?? []);
+          // 广播：另一视口的快捷指令列表同步更新
+          this.postMessage({ type: 'quickCommandsSync', commands: data.commands ?? [] });
           break;
         }
 
         case 'saveConfig': {
-          if (data.config) { this._saveConfig(data.config); }
+          if (data.config && monitorId) {
+            const rt = this._host.runtime(monitorId);
+            if (rt) {
+              this._host.registry.updateConfig(monitorId, { ...rt.manager.config, ...data.config });
+            }
+          }
           break;
         }
 
@@ -418,9 +509,6 @@ export class SerialPanelProvider implements vscode.WebviewViewProvider, vscode.D
 
   private _getHtmlForWebview(webview: vscode.Webview): string {
     const scriptUri = webview.asWebviewUri(vscode.Uri.joinPath(this._context.extensionUri, 'media', 'main.js'));
-    const terminalDeviceLineUri = webview.asWebviewUri(
-      vscode.Uri.joinPath(this._context.extensionUri, 'media', 'terminal-device-line.js'),
-    );
     const styleResetUri = webview.asWebviewUri(vscode.Uri.joinPath(this._context.extensionUri, 'media', 'reset.css'));
     const styleVSCodeUri = webview.asWebviewUri(vscode.Uri.joinPath(this._context.extensionUri, 'media', 'vscode.css'));
     const styleMainUri = webview.asWebviewUri(vscode.Uri.joinPath(this._context.extensionUri, 'media', 'main.css'));
@@ -455,9 +543,14 @@ export class SerialPanelProvider implements vscode.WebviewViewProvider, vscode.D
   <section id="panel-monitor" class="accordion-panel accordion-panel--monitor is-expanded" data-panel="monitor">
     <header class="accordion-header accordion-header--static" aria-expanded="true">
       <span class="accordion-title">Serial Monitor</span>
+    <button id="btn-add-monitor" class="accordion-header-add" type="button" title="Add Serial Monitor (max 10)">&#43;</button>
     </header>
     <div id="accordion-body-monitor" class="accordion-body">
     <div class="monitor-panel-main">
+    <div class="monitor-tabs-wrap">
+      <div id="monitor-tabs-slider" class="monitor-tabs-slider" aria-hidden="true"><div class="monitor-tabs-slider-thumb"></div></div>
+      <div id="monitor-tabs" class="monitor-tabs" aria-label="Serial monitors"></div>
+    </div>
     <div class="monitor-status-bar">
       <span id="status-dot" class="status-indicator status-disconnected"></span>
       <span id="status-text">Disconnected</span>
@@ -637,7 +730,6 @@ export class SerialPanelProvider implements vscode.WebviewViewProvider, vscode.D
   </section>
   </div>
 
-  <script nonce="${nonce}" src="${terminalDeviceLineUri}"></script>
   <script nonce="${nonce}" src="${scriptUri}"></script>
 </body>
 </html>`;
