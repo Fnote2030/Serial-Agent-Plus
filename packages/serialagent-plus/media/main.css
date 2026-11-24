@@ -77,7 +77,7 @@ body {
   min-width: 0;
 }
 
-.accordion-header-add {
+.monitor-row-btn {
   flex: none;
   display: inline-flex;
   align-items: center;
@@ -94,9 +94,70 @@ body {
   cursor: pointer;
 }
 
-.accordion-header-add:hover {
+.monitor-row-btn:hover {
   background: var(--vscode-button-secondaryHoverBackground, rgba(128, 128, 128, 0.3));
   color: var(--vscode-foreground);
+}
+
+.monitor-row-btn .codicon {
+  font-size: 13px;
+}
+
+/* ---- 当前监视器标题行（标签栏下方）：名称 + 新建 + 展开到编辑器 ---- */
+.monitor-title-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-bottom: 4px;
+  flex-shrink: 0;
+}
+
+.monitor-title-row-name {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--vscode-foreground);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+  padding: 0 2px;
+  border-radius: 3px;
+  cursor: text;
+}
+
+.monitor-title-row-name:hover {
+  background: var(--vscode-button-secondaryHoverBackground, rgba(128, 128, 128, 0.12));
+}
+
+/* 标题行重命名：`序号=` 固定前缀 + 名称输入框 */
+.monitor-title-row-name.is-renaming {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  overflow: visible;
+  padding: 0;
+  background: transparent;
+}
+
+.monitor-title-index {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--vscode-descriptionForeground);
+  user-select: none;
+}
+
+.monitor-title-rename-input {
+  width: 120px;
+  max-width: 100%;
+  height: 18px;
+  padding: 0 4px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--vscode-input-foreground);
+  background: var(--vscode-input-background);
+  border: 1px solid var(--vscode-focusBorder);
+  border-radius: 4px;
+  outline: none;
 }
 
 .accordion-body {
@@ -153,6 +214,14 @@ body {
 .monitor-tabs-wrap {
   flex-shrink: 0;
   margin-bottom: 4px;
+  padding-right: 2px; /* 防止最右侧按钮聚焦/悬停贴边被裁剪（同日志工具条做法） */
+}
+
+.monitor-tabs-scroll {
+  display: flex;
+  align-items: stretch;
+  min-width: 0;
+  flex: 1;
 }
 
 .monitor-tabs {
@@ -163,13 +232,46 @@ body {
   overflow-y: hidden;
   scrollbar-width: none; /* 原生滚动条完全隐藏（含箭头），顶部用自绘滑块 */
   -ms-overflow-style: none;
-  flex-shrink: 0;
+  min-width: 0; /* 允许收缩，标签在内部滚动，+ 按钮钉在容器右侧不被挤走 */
+  flex: 1 1 auto;
   min-height: 24px;
 }
 
 .monitor-tabs::-webkit-scrollbar {
   display: none;
   height: 0;
+}
+
+/* 编辑器面板（绑定单一监视器）不显示标签栏管理组件 */
+.panel-view .monitor-tabs-wrap {
+  display: none;
+}
+/* 编辑器面板本身就是编辑器区视图：隐藏“在编辑器区打开”按钮 */
+.panel-view #btn-monitor-expand {
+  display: none;
+}
+/* 标签栏最右侧固定的新建按钮（不随标签滚动，永不被遮挡） */
+.monitor-tabs-add {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  margin-left: 4px;
+  padding: 0;
+  border: none;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--vscode-descriptionForeground);
+  font-size: 15px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.monitor-tabs-add:hover {
+  background: var(--vscode-button-secondaryHoverBackground, rgba(128, 128, 128, 0.3));
+  color: var(--vscode-foreground);
 }
 
 /* 顶部自绘滑块：3px、悬停浮现（同 VS Code 选项卡栏，无箭头） */
@@ -718,9 +820,18 @@ body {
   gap: 6px;
   padding-bottom: 4px;
   flex: 0 0 38%;
-  min-height: 60px;
+  min-height: 120px;
   /* Manage Quick Commands 展开后在发送区内部滚动，不把输入框挤出视图 */
   overflow-y: auto;
+}
+
+/* 发送历史菜单向上弹出：展开时必须允许越过发送区上边界，
+   否则被 overflow 裁剪、看起来像被日志区遮挡 */
+.send-section:has(.history-dropdown.open),
+.send-section.history-open {
+  overflow: visible;
+  position: relative;
+  z-index: 5;
 }
 
 .quick-command-bar {

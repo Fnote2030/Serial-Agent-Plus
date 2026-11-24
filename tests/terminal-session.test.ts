@@ -39,6 +39,55 @@ describe('TerminalSession local line editing', () => {
   });
 });
 
+describe('TerminalSession paste', () => {
+  it('inserts pasted text at the caret without submitting', () => {
+    const { session, tx } = harness();
+    session.handleKey(key({ type: 'print', ch: 'l' }));
+    session.handleKey(key({ type: 'print', ch: 's' }));
+    session.handleKey(key({ type: 'moveTo', position: 'start' }));
+
+    session.handleKey(key({ type: 'paste', text: 'li' }));
+
+    expect(tx).toEqual([]); // 单行粘贴不自动执行
+    expect(session.snapshot().buffer).toBe('lils');
+    expect(session.snapshot().caret).toBe(2);
+  });
+
+  it('submits each pasted line like typing + Enter', () => {
+    const { session, tx } = harness();
+    session.handleKey(key({ type: 'paste', text: 'help\r\nlist_device\n' }));
+
+    expect(tx).toEqual(['help\r', 'list_device\r']);
+    expect(session.snapshot().buffer).toBe('');
+  });
+
+  it('keeps the remainder of the last line in the buffer when it has no trailing newline', () => {
+    const { session, tx } = harness();
+    session.handleKey(key({ type: 'paste', text: 'help\nlis' }));
+
+    expect(tx).toEqual(['help\r']);
+    expect(session.snapshot().buffer).toBe('lis');
+  });
+
+  it('strips tab/control characters and caps the inserted length', () => {
+    const { session } = harness();
+    session.handleKey(key({ type: 'paste', text: 'a\tb\u0007c\u001b[2J' }));
+    expect(session.snapshot().buffer).toBe('a bc[2J');
+
+    session.handleKey(key({ type: 'paste', text: 'x'.repeat(5000) }));
+    expect(session.snapshot().buffer.length).toBe(4096);
+  });
+
+  it('reconciles against the device line before submitting pasted multi-line text', () => {
+    const { session, tx } = harness();
+    session.handleKey(key({ type: 'print', ch: 'l' }));
+    session.handleKey(key({ type: 'tab' })); // 设备持有 'l'，本地缓冲清空
+    session.handleKey(key({ type: 'paste', text: 'ist\n' }));
+    // 设备行 'l' 与本地 'ist' 不一致：先退格清空设备行再整行 + CR
+    expect(tx[tx.length - 1]).toBe('\bist\r');
+  });
+});
+
 describe('TerminalSession history recall sync (msh redraw)', () => {
   beforeEach(() => { vi.useFakeTimers(); });
   afterEach(() => { vi.useRealTimers(); });

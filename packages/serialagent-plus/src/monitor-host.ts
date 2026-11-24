@@ -4,12 +4,25 @@ import { MonitorRegistry, MonitorMeta, MonitorStorage } from './monitor-registry
 import { TerminalSession } from './terminal-session';
 import { SerialConfig } from './types';
 
-/** 每监视器运行时：元数�?+ 串口管理�?+ 终端会话 + 未连接时的待发终端字�?*/
+/** 每监视器运行时：元数据 + 串口管理器 + 终端会话 + 未连接时的待发终端字节 */
 export interface MonitorRuntime {
   meta: MonitorMeta;
   manager: SerialManager;
   session: TerminalSession;
   pendingTerminalBytes: string | null;
+  /** 最近一次设置的周期（定时器停止后仍保留，供新视口同步显示） */
+  periodicIntervalMs: number;
+  /** 周期发送状态：定时器在宿主侧运行，视口只发指令/收状态，天然不会双发 */
+  periodic: {
+    timer: ReturnType<typeof setInterval> | null;
+    intervalMs: number;
+    /** 发送框原文（回显/历史与手动发送一致） */
+    text: string;
+    /** 实际落串口的内容（文本模式已解释 \r\n\t\xNN 转义） */
+    payload: string;
+    hexSend: boolean;
+    echo: boolean;
+  } | null;
 }
 
 /** 面向 UI 的监视器摘要（含连接状态） */
@@ -29,8 +42,8 @@ function stripOsc(text: string): string {
 }
 
 /**
- * �?Serial Monitor 宿主：组�?MonitorRegistry（元数据/持久化）与每监视器运行时�?
- * 对上（provider/bridge/状态栏）提供统一的监视与操作入口�?
+ * Serial Monitor 宿主：组合 MonitorRegistry（元数据/持久化）与每监视器运行时；
+ * 对上（provider/bridge/状态栏）提供统一的监视与操作入口。
  */
 export class MonitorHost implements vscode.Disposable {
   private readonly _runtimes = new Map<string, MonitorRuntime>();
@@ -56,6 +69,7 @@ export class MonitorHost implements vscode.Disposable {
 
   dispose(): void {
     for (const rt of this._runtimes.values()) {
+      this._stopPeriodic(rt);
       rt.session.dispose();
       void rt.manager.disconnect();
     }
@@ -109,7 +123,8 @@ export class MonitorHost implements vscode.Disposable {
   deleteMonitor(id: string): void {
     const rt = this._runtimes.get(id);
     if (!rt) { return; }
-    // 静默断开 �?释放会话 �?删除元数�?
+    // 静默断开 → 释放会话 → 删除元数据
+    this._stopPeriodic(rt);
     void rt.manager.disconnect();
     rt.session.dispose();
     this._runtimes.delete(id);
@@ -123,7 +138,14 @@ export class MonitorHost implements vscode.Disposable {
     return this.viewInfo(meta);
   }
 
-  /** 连接指定监视器；端口被其它监视器占用时拒绝并返回占用者描�?*/
+  /** 更新监视器显示类配置（bridge config 端点用）：manager 生效 + 持久化 */
+  updateMonitorConfig(id: string, partial: Partial<SerialConfig>): SerialConfig {
+    const rt = this._runtimes.get(id);
+    if (rt) { rt.manager.updateSettings(partial); }
+    return this._registry.updateConfig(id, partial);
+  }
+
+  /** 连接指定监视器；端口被其它监视器占用时拒绝并返回占用者描述 */
   async connect(id: string, config: SerialConfig): Promise<{ ok: boolean; error?: string }> {
     const rt = this._runtimes.get(id);
     if (!rt) { return { ok: false, error: `Monitor not found: ${id}` }; }
@@ -139,7 +161,7 @@ export class MonitorHost implements vscode.Disposable {
     return ok ? { ok: true } : { ok: false, error: 'Connect failed' };
   }
 
-  /** 检查端口被哪个其它监视器占用（返回占用者元数据�?*/
+  /** 检查端口被哪个其它监视器占用（返回占用者元数据） */
   portConflict(port: string, excludeId: string): MonitorMeta | undefined {
     return this._portOwner(port, excludeId);
   }
@@ -174,6 +196,11 @@ export class MonitorHost implements vscode.Disposable {
           } else {
             rt.session.resetEditing();
             rt.pendingTerminalBytes = null;
+            // 断开时停止该监视器的周期发送，并广播状态（视口同步取消勾选）
+            if (rt.periodic) {
+              this._stopPeriodic(rt);
+              this._emitPeriodicState(meta.id, false, rt.periodicIntervalMs);
+            }
           }
         }
         this._onEvent({ type: 'status', monitorId: meta.id, connected, port: portPath ?? '', baudRate: baudRate ?? 0 });
@@ -182,18 +209,113 @@ export class MonitorHost implements vscode.Disposable {
       onCounterUpdate: (rx, tx) => { this._onEvent({ type: 'counters', monitorId: meta.id, rx, tx }); },
     });
     manager.updateSettings(meta.config);
-    this._runtimes.set(meta.id, { meta, manager, session, pendingTerminalBytes: null });
+    this._runtimes.set(meta.id, {
+      meta,
+      manager,
+      session,
+      pendingTerminalBytes: null,
+      periodicIntervalMs: 1000,
+      periodic: null,
+    });
   }
 
-  /** 终端字节落串口：未连接时暂存并触发连接（连接成功后由 provider 排空�?*/
+  /** 周期发送的对外状态（新视口初始化时同步勾选与周期） */
+  periodicState(id: string): { enabled: boolean; intervalMs: number } {
+    const rt = this._runtimes.get(id);
+    return {
+      enabled: !!rt?.periodic?.timer,
+      intervalMs: rt?.periodicIntervalMs ?? 1000,
+    };
+  }
+
+  /**
+   * 周期发送（宿主侧唯一定时器）：视口发来启停/参数更新，宿主运行定时器，
+   * 状态经 periodicState 广播到所有视口——两侧界面表现完全一致且不会双发。
+   */
+  setPeriodicSend(
+    id: string,
+    opts: {
+      enabled: boolean; intervalMs?: number; text?: string; payload?: string; hexSend?: boolean; echo?: boolean;
+    },
+  ): void {
+    const rt = this._runtimes.get(id);
+    if (!rt) { return; }
+
+    if (!opts.enabled || !rt.manager.isConnected) {
+      // 关闭，或未连接时请求开启：一律按关闭处理并广播（视口同步取消勾选）
+      const intervalMs = Math.max(10, Math.floor(opts.intervalMs ?? rt.periodicIntervalMs));
+      rt.periodicIntervalMs = intervalMs;
+      this._stopPeriodic(rt);
+      this._emitPeriodicState(id, false, intervalMs);
+      return;
+    }
+
+    const intervalMs = Math.max(10, Math.floor(opts.intervalMs ?? rt.periodicIntervalMs));
+    rt.periodicIntervalMs = intervalMs;
+    const previousInterval = rt.periodic?.intervalMs;
+    if (!rt.periodic) {
+      rt.periodic = {
+        timer: null,
+        intervalMs,
+        text: opts.text ?? '',
+        payload: opts.payload ?? opts.text ?? '',
+        hexSend: opts.hexSend ?? false,
+        echo: opts.echo ?? false,
+      };
+    } else {
+      rt.periodic.intervalMs = intervalMs;
+      if (opts.text !== undefined) {
+        rt.periodic.text = opts.text;
+        if (opts.payload === undefined) { rt.periodic.payload = opts.text; }
+      }
+      if (opts.payload !== undefined) { rt.periodic.payload = opts.payload; }
+      if (opts.hexSend !== undefined) { rt.periodic.hexSend = opts.hexSend; }
+      if (opts.echo !== undefined) { rt.periodic.echo = opts.echo; }
+    }
+    // 定时器不存在或周期变化时（重）启动；仅更新文本时不重启、保持节拍相位
+    if (!rt.periodic.timer || previousInterval !== intervalMs) {
+      if (rt.periodic.timer) { clearInterval(rt.periodic.timer); }
+      rt.periodic.timer = setInterval(() => this._periodicTick(id), intervalMs);
+    }
+    this._emitPeriodicState(id, true, intervalMs);
+  }
+
+  private _periodicTick(id: string): void {
+    const rt = this._runtimes.get(id);
+    if (!rt || !rt.periodic) { return; }
+    if (!rt.manager.isConnected) {
+      const intervalMs = rt.periodicIntervalMs;
+      this._stopPeriodic(rt);
+      this._emitPeriodicState(id, false, intervalMs);
+      return;
+    }
+    const { text, payload, hexSend, echo } = rt.periodic;
+    if (!text.trim()) { return; } // 空草稿：跳过本拍（与旧行为一致）
+    void rt.manager.send(payload, hexSend, rt.manager.config.lineEnding);
+    this._onEvent({ type: 'periodicTick', monitorId: id, text, payload, hexSend, echo });
+  }
+
+  private _stopPeriodic(rt: MonitorRuntime): void {
+    if (rt.periodic?.timer) { clearInterval(rt.periodic.timer); }
+    rt.periodic = null;
+  }
+
+  private _emitPeriodicState(id: string, enabled: boolean, intervalMs: number): void {
+    this._onEvent({ type: 'periodicState', monitorId: id, enabled, intervalMs });
+  }
+
+  /** 终端字节落串口：未连接时暂存并触发连接（连接成功后由 provider 排空） */
   private _onTx(id: string, bytes: string): void {
     const rt = this._runtimes.get(id);
     if (!rt) { return; }
     if (rt.manager.isConnected) {
       void rt.manager.send(bytes, false, 'none');
-    } else {
+    } else if (rt.pendingTerminalBytes === null) {
+      // 首次入队才请求连接；后续字节（如多行粘贴）追加到同一批，避免重复发起连接
       rt.pendingTerminalBytes = bytes;
       this._onEvent({ type: 'terminalConnectRequest', monitorId: id });
+    } else {
+      rt.pendingTerminalBytes += bytes;
     }
   }
 
@@ -210,7 +332,7 @@ export class MonitorHost implements vscode.Disposable {
     const rt = this._runtimes.get(id);
     if (!rt) { return; }
     if (text.includes('MCP TX>> ')) {
-      // MCP 发送回显：直接作为 echo 日志行，不进终端行模�?
+      // MCP 发送回显：直接作为 echo 日志行，不进终端行模拟
       const cleaned = text.replace(/\u001b\[[0-9;?]*[A-Za-z]/g, '').replace(/\n$/, '');
       this._onEvent({ type: 'logLines', monitorId: id, lines: [cleaned], kind: 'echo' });
       return;
@@ -236,4 +358,8 @@ export type MonitorHostEvent =
   | { type: 'counters'; monitorId: string; rx: number; tx: number }
   | { type: 'error'; monitorId: string; message: string }
   | { type: 'clearScreen'; monitorId: string }
-  | { type: 'terminalConnectRequest'; monitorId: string };
+  | { type: 'terminalConnectRequest'; monitorId: string }
+  | { type: 'periodicState'; monitorId: string; enabled: boolean; intervalMs: number }
+  | {
+      type: 'periodicTick'; monitorId: string; text: string; payload: string; hexSend: boolean; echo: boolean;
+    };

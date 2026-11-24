@@ -45,8 +45,11 @@ for (const item of copyItems) {
 fs.writeFileSync(path.join(tmpDir, 'tsconfig.json'), JSON.stringify({
   compilerOptions: {
     target: 'ES2020',
-    module: 'commonjs',
+    // nodenext：保持 CommonJS 输出（包内无 "type": "module"），同时避开已弃用的 node10 解析
+    module: 'nodenext',
+    moduleResolution: 'nodenext',
     lib: ['ES2020'],
+    types: ['node'],
     strict: true,
     esModuleInterop: true,
     skipLibCheck: true,

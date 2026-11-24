@@ -83,6 +83,7 @@ export interface ISerialManager {
   getLogBuffer(): string[];
   clearLog(): void;
   resetCounters(): void;
+  updateSettings(partial: Partial<SerialConfig>): void;
 
   /** 注入一行日志到缓冲区（用于 Bridge API Echo 等场景） */
   injectLog(line: string): void;

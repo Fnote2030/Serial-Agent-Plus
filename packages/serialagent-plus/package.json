@@ -88,18 +88,59 @@
       },
       {
         "command": "serialagent.openInTab",
-        "title": "Open Serial Agent Plus",
+        "title": "Select Serial Monitor...",
         "category": "Serial Agent Plus",
-        "icon": {
-          "light": "media/SerialAgentPlus.svg",
-          "dark": "media/SerialAgentPlus.svg"
-        }
+        "icon": "$(circuit-board)"
       },
       {
-        "command": "serialagent.addMonitor",
-        "title": "Add Serial Monitor",
-        "category": "Serial Agent Plus",
-        "icon": "$(add)"
+        "command": "serialagent.openMonitor1",
+        "title": "Monitor 1",
+        "category": "Serial Agent Plus"
+      },
+      {
+        "command": "serialagent.openMonitor2",
+        "title": "Monitor 2",
+        "category": "Serial Agent Plus"
+      },
+      {
+        "command": "serialagent.openMonitor3",
+        "title": "Monitor 3",
+        "category": "Serial Agent Plus"
+      },
+      {
+        "command": "serialagent.openMonitor4",
+        "title": "Monitor 4",
+        "category": "Serial Agent Plus"
+      },
+      {
+        "command": "serialagent.openMonitor5",
+        "title": "Monitor 5",
+        "category": "Serial Agent Plus"
+      },
+      {
+        "command": "serialagent.openMonitor6",
+        "title": "Monitor 6",
+        "category": "Serial Agent Plus"
+      },
+      {
+        "command": "serialagent.openMonitor7",
+        "title": "Monitor 7",
+        "category": "Serial Agent Plus"
+      },
+      {
+        "command": "serialagent.openMonitor8",
+        "title": "Monitor 8",
+        "category": "Serial Agent Plus"
+      },
+      {
+        "command": "serialagent.openMonitor9",
+        "title": "Monitor 9",
+        "category": "Serial Agent Plus"
+      },
+      {
+        "command": "serialagent.openMonitor10",
+        "title": "Monitor 10",
+        "category": "Serial Agent Plus"
       }
     ],
     "configuration": {
@@ -133,24 +174,57 @@
           "maximum": 10240,
           "scope": "machine",
           "markdownDescription": "Log buffer cap in KB (total UTF-8 bytes, oldest lines dropped first). Shared by the log view and the extension log buffer used by Save Log / MCP `read_serial_log`."
+        },
+        "serialagent.monitorOpenTarget": {
+          "type": "string",
+          "default": "active",
+          "enum": ["active", "beside"],
+          "scope": "machine",
+          "markdownDescription": "Where a Serial Monitor opens in the editor area: `active` reuses the current editor group, `beside` opens a new group to the right."
         }
       }
     },
     "keybindings": [],
+    "submenus": [
+      {
+        "id": "serialagent.openMonitorMenu",
+        "label": "Serial Monitor",
+        "icon": "$(circuit-board)"
+      }
+    ],
     "menus": {
       "editor/title": [
         {
-          "command": "serialagent.openInTab",
+          "submenu": "serialagent.openMonitorMenu",
           "group": "navigation",
-          "when": "true"
+          "when": "config.workbench.editor.editorActionsLocation != 'titleBar' && config.workbench.editor.showTabs != 'none'"
         }
       ],
-      "view/title": [
-        {
-          "command": "serialagent.openInTab",
-          "group": "navigation",
-          "when": "view == serialagent-plus.serialPanel"
-        }
+      "serialagent.openMonitorMenu": [
+        { "command": "serialagent.openMonitor1", "when": "serialagent.monitor1", "group": "monitors@1" },
+        { "command": "serialagent.openMonitor2", "when": "serialagent.monitor2", "group": "monitors@2" },
+        { "command": "serialagent.openMonitor3", "when": "serialagent.monitor3", "group": "monitors@3" },
+        { "command": "serialagent.openMonitor4", "when": "serialagent.monitor4", "group": "monitors@4" },
+        { "command": "serialagent.openMonitor5", "when": "serialagent.monitor5", "group": "monitors@5" },
+        { "command": "serialagent.openMonitor6", "when": "serialagent.monitor6", "group": "monitors@6" },
+        { "command": "serialagent.openMonitor7", "when": "serialagent.monitor7", "group": "monitors@7" },
+        { "command": "serialagent.openMonitor8", "when": "serialagent.monitor8", "group": "monitors@8" },
+        { "command": "serialagent.openMonitor9", "when": "serialagent.monitor9", "group": "monitors@9" },
+        { "command": "serialagent.openMonitor10", "when": "serialagent.monitor10", "group": "monitors@10" },
+        { "command": "serialagent.openInTab", "group": "select@1" }
+      ],
+      "commandPalette": [
+        { "command": "serialagent.openMonitor1", "when": "false" },
+        { "command": "serialagent.openMonitor2", "when": "false" },
+        { "command": "serialagent.openMonitor3", "when": "false" },
+        { "command": "serialagent.openMonitor4", "when": "false" },
+        { "command": "serialagent.openMonitor5", "when": "false" },
+        { "command": "serialagent.openMonitor6", "when": "false" },
+        { "command": "serialagent.openMonitor7", "when": "false" },
+        { "command": "serialagent.openMonitor8", "when": "false" },
+        { "command": "serialagent.openMonitor9", "when": "false" },
+        { "command": "serialagent.openMonitor10", "when": "false" },
+        { "command": "serialagent.addMonitor", "when": "false" }
       ]
     }
   },

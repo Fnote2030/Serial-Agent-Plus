@@ -5,6 +5,9 @@ webpack.config.js
 **/*.map
 **/*.d.ts
 
+# 图标设计源文件（仅用于生成 media/SerialAgentPlus.png，不进扩展包）
+media/SerialAgentPlus_logo.svg
+
 # 排除所有 node_modules，只保留 @serialport/bindings-cpp（含原生 .node 二进制）和 node-gyp-build（加载器）
 node_modules/**
 

@@ -1,4 +1,6 @@
 import * as crypto from 'crypto';
+import * as os from 'os';
+import * as path from 'path';
 import * as vscode from 'vscode';
 import { MonitorHost, MonitorHostEvent, MonitorViewInfo } from './monitor-host';
 import { PortAutoRefresh } from './port-auto-refresh';
@@ -33,15 +35,29 @@ interface SerialPanelUiState {
   normalSendHeight?: number;
 }
 
+/** 视口日志条的显示条目（时间戳已格式化，回放时原样追加） */
+interface LogSnapshotEntry {
+  text: string;
+  kind: 'text' | 'echo';
+}
+
+interface LogRing {
+  entries: LogSnapshotEntry[];
+  bytes: number;
+}
+
 export class SerialPanelProvider implements vscode.WebviewViewProvider, vscode.Disposable {
   public static readonly viewType = 'serialagent-plus.serialPanel';
   public static readonly panelViewType = 'serialagent-plus.serialPanel.tab';
 
   private _view?: vscode.WebviewView;
-  private _panel?: vscode.WebviewPanel;
+  /** 编辑器区面板注册表：panel → 绑定的 monitorId（空串 = 未指定，默认第一个） */
+  private readonly _panels = new Map<vscode.WebviewPanel, string>();
   private readonly _portAutoRefresh: PortAutoRefresh;
   /** 每监视器最近一次广播的 UI 状态（新视口打开时随 restoreState 下发） */
   private readonly _uiStates = new Map<string, Record<string, unknown>>();
+  /** 每监视器日志区显示内容（新视口打开时回放，保证两个视口日志一致） */
+  private readonly _logRings = new Map<string, LogRing>();
 
   constructor(
     private readonly _context: vscode.ExtensionContext,
@@ -59,9 +75,22 @@ export class SerialPanelProvider implements vscode.WebviewViewProvider, vscode.D
   /** MonitorHost 事件 → 组播到所有视口（侧边栏 + 编辑器面板） */
   public handleHostEvent(event: MonitorHostEvent): void {
     switch (event.type) {
-      case 'metas':
+      case 'metas': {
         this.postMessage({ type: 'monitorsChanged', monitors: event.monitors });
+        // 重命名刷新面板标题；被删除监视器的编辑器面板同步关闭
+        const alive = new Set(event.monitors.map((m) => m.id));
+        for (const id of [...this._logRings.keys()]) {
+          if (!alive.has(id)) { this._logRings.delete(id); }
+        }
+        for (const [panel, mid] of [...this._panels]) {
+          if (mid && !alive.has(mid)) {
+            panel.dispose();
+          } else if (mid) {
+            this._refreshPanelTitle(panel, mid);
+          }
+        }
         break;
+      }
       case 'status':
         this.postMessage({
           type: 'updateStatus',
@@ -74,6 +103,9 @@ export class SerialPanelProvider implements vscode.WebviewViewProvider, vscode.D
         this._onStatusChange(event.connected, event.port, event.baudRate);
         break;
       case 'logLines':
+        for (const line of event.lines) {
+          this._appendLogRing(event.monitorId, this._prefixTimestamp(event.monitorId, line), event.kind);
+        }
         this.postMessage({ type: 'logLines', monitorId: event.monitorId, lines: event.lines, kind: event.kind });
         break;
       case 'terminalState':
@@ -83,9 +115,11 @@ export class SerialPanelProvider implements vscode.WebviewViewProvider, vscode.D
         this.postMessage({ type: 'updateCounters', monitorId: event.monitorId, rx: event.rx, tx: event.tx });
         break;
       case 'error':
+        this._appendLogRing(event.monitorId, `[ERROR] ${event.message}`, 'echo');
         this.postMessage({ type: 'appendError', monitorId: event.monitorId, message: event.message });
         break;
       case 'clearScreen':
+        this._clearLogRing(event.monitorId);
         this.postMessage({ type: 'clearScreen', monitorId: event.monitorId });
         break;
       case 'terminalConnectRequest': {
@@ -96,15 +130,48 @@ export class SerialPanelProvider implements vscode.WebviewViewProvider, vscode.D
         }
         break;
       }
+      case 'periodicState':
+        this.postMessage({
+          type: 'periodicState',
+          monitorId: event.monitorId,
+          enabled: event.enabled,
+          intervalMs: event.intervalMs,
+        });
+        break;
+      case 'periodicTick': {
+        if (event.echo) {
+          // 周期发送回显行也进日志环：新视口回放时与已有视口一致
+          this._appendLogRing(
+            event.monitorId,
+            `TX>> ${this._prefixTimestamp(event.monitorId, event.payload)}`,
+            'echo',
+          );
+        }
+        this.postMessage({
+          type: 'periodicTick',
+          monitorId: event.monitorId,
+          text: event.text,
+          payload: event.payload,
+          hexSend: event.hexSend,
+          echo: event.echo,
+        });
+        // 发送历史由宿主统一维护（节拍内文本不变时不写全局状态、不广播）
+        const meta = this._host.registry.get(event.monitorId);
+        if (meta && meta.sendHistory[0] !== event.text) {
+          const history = [
+            event.text,
+            ...meta.sendHistory.filter((item) => item !== event.text),
+          ].slice(0, MAX_SEND_HISTORY);
+          this._host.registry.updateSendHistory(event.monitorId, history);
+          this.postMessage({ type: 'sendHistorySync', monitorId: event.monitorId, history });
+        }
+        break;
+      }
     }
   }
 
   dispose(): void {
     this._portAutoRefresh.dispose();
-  }
-
-  get panel(): vscode.WebviewPanel | undefined {
-    return this._panel;
   }
 
   public resolveWebviewView(
@@ -130,15 +197,17 @@ export class SerialPanelProvider implements vscode.WebviewViewProvider, vscode.D
     }
   }
 
-  public resolveWebviewPanel(panel: vscode.WebviewPanel): void {
-    this._panel = panel;
+  public resolveWebviewPanel(panel: vscode.WebviewPanel, monitorId?: string): void {
+    const boundMonitorId = monitorId ?? '';
+    this._panels.set(panel, boundMonitorId);
     panel.webview.options = {
       enableScripts: true,
       localResourceRoots: [this._context.extensionUri],
     };
-    panel.webview.html = this._getHtmlForWebview(panel.webview);
+    // 面板视图：隐藏标签栏管理组件（仅展示绑定的监视器）
+    panel.webview.html = this._getHtmlForWebview(panel.webview, !!boundMonitorId);
 
-    this._initializeView(panel.webview);
+    this._initializeView(panel.webview, boundMonitorId || undefined);
 
     panel.onDidChangeViewState(() => {
       this._updatePortRefreshVisibility();
@@ -148,12 +217,62 @@ export class SerialPanelProvider implements vscode.WebviewViewProvider, vscode.D
     }
 
     panel.onDidDispose(() => {
-      this._panel = undefined;
+      this._panels.delete(panel);
       this._updatePortRefreshVisibility();
     });
+
+    if (boundMonitorId) {
+      this._refreshPanelTitle(panel, boundMonitorId);
+    }
   }
 
-  public async refreshPortList(options?: { forceFull?: boolean; silent?: boolean }): Promise<void> {
+  /** 将指定监视器展示到编辑器区（按 monitorOpenTarget 设置选择分组），已打开则前置 */
+  public openMonitorInEditor(monitorId: string): void {
+    const meta = this._host.registry.get(monitorId);
+    if (!meta) {
+      vscode.window.showWarningMessage('[Serial Agent Plus] Monitor not found');
+      return;
+    }
+    for (const [panel, mid] of this._panels) {
+      if (mid === monitorId) {
+        panel.reveal();
+        return;
+      }
+    }
+    const target = vscode.workspace.getConfiguration('serialagent')
+      .get<'active' | 'beside'>('monitorOpenTarget', 'active');
+    const panel = vscode.window.createWebviewPanel(
+      SerialPanelProvider.panelViewType,
+      `${meta.index}=${meta.name}`,
+      target === 'beside' ? vscode.ViewColumn.Beside : vscode.ViewColumn.Active,
+      {
+        enableScripts: true,
+        retainContextWhenHidden: true,
+        localResourceRoots: [this._context.extensionUri],
+      },
+    );
+    panel.iconPath = {
+      light: vscode.Uri.joinPath(this._context.extensionUri, 'media', 'SerialAgentPlus.png'),
+      dark: vscode.Uri.joinPath(this._context.extensionUri, 'media', 'SerialAgentPlus.png'),
+    };
+    this.resolveWebviewPanel(panel, monitorId);
+  }
+
+  private _refreshPanelTitle(panel: vscode.WebviewPanel, monitorId: string): void {
+    const meta = this._host.registry.get(monitorId);
+    if (meta) {
+      panel.title = `${meta.index}=${meta.name}`;
+    }
+  }
+
+  public async refreshPortList(options?: { forceFull?: boolean; silent?: boolean; target?: vscode.Webview }): Promise<void> {
+    const send = (message: Record<string, unknown>) => {
+      if (options?.target) {
+        void options.target.postMessage(message);
+      } else {
+        this.postMessage(message);
+      }
+    };
     try {
       if (options?.forceFull) {
         const ports = await this._host.primary().manager.listPorts({
@@ -161,13 +280,13 @@ export class SerialPanelProvider implements vscode.WebviewViewProvider, vscode.D
           forceMetadata: true,
         });
         this._portAutoRefresh.syncFingerprints(ports);
-        this.postMessage({ type: 'updatePorts', ports });
+        send({ type: 'updatePorts', ports });
         return;
       }
 
       const ports = await this._portAutoRefresh.refreshOnce();
       if (ports) {
-        this.postMessage({ type: 'updatePorts', ports });
+        send({ type: 'updatePorts', ports });
       }
     } catch (err: unknown) {
       if (options?.silent) {
@@ -194,11 +313,62 @@ export class SerialPanelProvider implements vscode.WebviewViewProvider, vscode.D
     for (const rt of this._host.list().map((info) => this._host.runtime(info.id))) {
       rt?.manager.updateSettings({ logBufferKB: kb });
     }
+    for (const ring of this._logRings.values()) {
+      this._trimLogRing(ring);
+    }
     this.postMessage({ type: 'updateLogBuffer', logBufferKB: kb });
   }
 
+  /** 与 webview 的 formatLogTimestamp 输出一致（含尾随空格），回放时原样追加 */
+  private _logTimestamp(): string {
+    const now = new Date();
+    return `[${now.toTimeString().split(' ')[0]}.${String(now.getMilliseconds()).padStart(3, '0')}] `;
+  }
+
+  private _prefixTimestamp(monitorId: string, text: string): string {
+    const showTimestamp = this._host.runtime(monitorId)?.manager.config.showTimestamp ?? false;
+    return showTimestamp ? `${this._logTimestamp()}${text}` : text;
+  }
+
+  /** 新视口打开时回放的日志条（时间戳在产生的视口格式化后此处原样保存） */
+  private _appendLogRing(monitorId: string, text: string, kind: 'text' | 'echo'): void {
+    if (!monitorId) { return; }
+    let ring = this._logRings.get(monitorId);
+    if (!ring) {
+      ring = { entries: [], bytes: 0 };
+      this._logRings.set(monitorId, ring);
+    }
+    ring.entries.push({ text, kind });
+    ring.bytes += Buffer.byteLength(text, 'utf8');
+    this._trimLogRing(ring);
+  }
+
+  /** 按 serialagent.logBufferKB 裁剪（与 webview 一致：至少保留最新一条） */
+  private _trimLogRing(ring: LogRing): void {
+    const limit = this._readLogBufferKB() * 1024;
+    while (ring.entries.length > 1 && ring.bytes > limit) {
+      const oldest = ring.entries.shift();
+      if (!oldest) { break; }
+      ring.bytes -= Buffer.byteLength(oldest.text, 'utf8');
+    }
+  }
+
+  private _clearLogRing(monitorId: string): void {
+    this._logRings.delete(monitorId);
+  }
+
+  /** 清空某监视器日志：清日志环 + 广播给所有视口（bridge/MCP 与 webview 按钮共用） */
+  public clearMonitorLog(monitorId: string): void {
+    this._clearLogRing(monitorId);
+    this.postMessage({ type: 'clearLog', monitorId });
+  }
+
   private _isAnyViewVisible(): boolean {
-    return !!(this._view?.visible || this._panel?.visible);
+    if (this._view?.visible) { return true; }
+    for (const [panel] of this._panels) {
+      if (panel.visible) { return true; }
+    }
+    return false;
   }
 
   private _updatePortRefreshVisibility(): void {
@@ -207,11 +377,9 @@ export class SerialPanelProvider implements vscode.WebviewViewProvider, vscode.D
 
   public postMessage(message: Record<string, unknown>) {
     void this._view?.webview.postMessage(message);
-    void this._panel?.webview.postMessage(message);
-  }
-
-  public clearPanel(): void {
-    this._panel = undefined;
+    for (const [panel] of this._panels) {
+      void panel.webview.postMessage(message);
+    }
   }
 
   private _saveSerialProfiles(profiles: SerialProfile[]): void {
@@ -248,32 +416,113 @@ export class SerialPanelProvider implements vscode.WebviewViewProvider, vscode.D
     };
   }
 
-  private async _saveLogToFile(logLines: string[]): Promise<void> {
+  /** 非法文件名字符（Windows/POSIX 交集）替换为 '-'，并压缩空白 */
+  private _sanitizeFileNameSegment(value: string): string {
+    const cleaned = value
+      .replace(/[\\/:*?"<>|\u0000-\u001f]/g, '-')
+      .replace(/\s+/g, '-')
+      .replace(/-{2,}/g, '-')
+      .replace(/^[-.]+/, '')
+      .slice(0, 40)
+      .replace(/[-.]+$/, '');
+    return cleaned || 'monitor';
+  }
+
+  /** 文件名时间戳：YYYYMMDDHHmmss */
+  private _compactTimestamp(date: Date): string {
+    const pad = (value: number) => String(value).padStart(2, '0');
+    return `${date.getFullYear()}${pad(date.getMonth() + 1)}${pad(date.getDate())}`
+      + `${pad(date.getHours())}${pad(date.getMinutes())}${pad(date.getSeconds())}`;
+  }
+
+  /** 可读时间戳：YYYY-MM-DD HH:mm:ss */
+  private _readableTimestamp(date: Date): string {
+    const pad = (value: number) => String(value).padStart(2, '0');
+    return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} `
+      + `${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
+  }
+
+  /** 默认文件名：serial-agent-plus-<监视器名>-<YYYYMMDDHHmmss>.log */
+  private _defaultLogFileName(monitorId: string, now: Date): string {
+    const meta = this._host.registry.get(monitorId);
+    const segment = this._sanitizeFileNameSegment(meta?.name ?? 'monitor');
+    return `serial-agent-plus-${segment}-${this._compactTimestamp(now)}.log`;
+  }
+
+  /** 文件头部的串口信息（与日志正文一起保存，便于事后回溯连接参数） */
+  private _buildLogHeader(monitorId: string, lineCount: number, now: Date): string[] {
+    const meta = this._host.registry.get(monitorId);
+    const rt = this._host.runtime(monitorId);
+    const cfg = rt?.manager.config;
+    const connected = !!rt?.manager.isConnected;
+    const port = (connected ? rt!.manager.currentPath : cfg?.port) || '(none)';
+    const baudRate = (connected ? rt!.manager.currentBaudRate : cfg?.baudRate) || 0;
+    const frame = cfg ? `${cfg.dataBits}-${cfg.parity}-${cfg.stopBits}` : 'unknown';
+
+    const rows: Array<[string, string]> = [
+      ['Monitor', meta ? `${meta.index}=${meta.name}` : monitorId || '(unknown)'],
+      ['Connection', connected ? 'Connected' : 'Disconnected'],
+      ['Port', String(port)],
+      ['Baud Rate', baudRate ? String(baudRate) : '(unknown)'],
+      ['Frame', frame],
+      ['Flow Control', cfg?.flowControl ?? 'none'],
+      ['Encoding', cfg?.encoding === 'gbk' ? 'GBK' : 'UTF-8'],
+      ['RX / TX', `${formatByteCount(rt?.manager.rxBytes ?? 0)} / ${formatByteCount(rt?.manager.txBytes ?? 0)}`],
+      ['Exported At', this._readableTimestamp(now)],
+      ['Log Lines', String(lineCount)],
+    ];
+    const width = Math.max(...rows.map(([label]) => label.length));
+    return [
+      '# ===== Serial Agent Plus log =====',
+      ...rows.map(([label, value]) => `# ${label.padEnd(width)} : ${value}`),
+      '# ===== log data =====',
+      '',
+    ];
+  }
+
+  private async _saveLogToFile(monitorId: string, logLines: string[]): Promise<void> {
+    const now = new Date();
+    const fileName = this._defaultLogFileName(monitorId, now);
+    const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
+    const defaultUri = workspaceFolder
+      ? vscode.Uri.joinPath(workspaceFolder.uri, fileName)
+      : vscode.Uri.file(path.join(os.homedir(), fileName));
+
     const target = await vscode.window.showSaveDialog({
       saveLabel: 'Save Serial Log',
       filters: {
         'Log Files': ['log', 'txt'],
         'All Files': ['*'],
       },
-      defaultUri: vscode.Uri.file(`serial-agent-${Date.now()}.log`),
+      defaultUri,
     });
 
     if (!target) {
       return;
     }
 
-    const content = logLines.join('\n');
+    const header = this._buildLogHeader(monitorId, logLines.length, now);
+    const content = `${[...header, ...logLines].join('\n')}\n`;
     await vscode.workspace.fs.writeFile(target, Buffer.from(content, 'utf8'));
     vscode.window.showInformationMessage(`[Serial Agent Plus] Log saved: ${target.fsPath}`);
   }
 
-  private _initializeView(webview: vscode.Webview): void {
+  private _initializeView(webview: vscode.Webview, monitorId?: string): void {
     // 缓冲上限来自后台配置项 serialagent.logBufferKB，应用到所有监视器
     this.handleLogBufferConfigChange();
 
-    this._setupWebviewMessageHandler(webview);
+    this._setupWebviewMessageHandler(webview, monitorId);
+    // webview 脚本注册 message 监听前收到的 postMessage 会丢失（标签栏/快捷指令空白），
+    // 因此初始状态等视口发来 ready 后再下发；这里先发一次覆盖"脚本已就绪"的竞态
+    this._sendInitialState(webview, monitorId);
+  }
 
-    void this.refreshPortList({ forceFull: true, silent: true });
+  /** 向单个视口下发初始状态（restoreState + activateMonitor + 周期/连接/计数） */
+  private _sendInitialState(webview: vscode.Webview, monitorId?: string): void {
+    // 初始状态只发给"这个"新视口：广播会让其它视口误切标签（如 activateMonitor）
+    const send = (message: Record<string, unknown>) => { void webview.postMessage(message); };
+
+    void this.refreshPortList({ forceFull: true, silent: true, target: webview });
 
     // 监视器列表 + 各自配置与发送历史（webview 按 monitorId 分桶恢复）
     const monitors = this._host.list().map((info) => {
@@ -285,7 +534,7 @@ export class SerialPanelProvider implements vscode.WebviewViewProvider, vscode.D
         ui: this._uiStates.get(info.id) ?? null,
       };
     });
-    this.postMessage({
+    send({
       type: 'restoreState',
       monitors,
       serialProfiles: this._loadSerialProfiles(),
@@ -293,10 +542,21 @@ export class SerialPanelProvider implements vscode.WebviewViewProvider, vscode.D
       uiState: this._loadPanelUiState(),
     });
 
-    // 已连接的监视器补充推送状态与计数（webview 恢复时默认 disconnected）
+    // 编辑器面板绑定指定监视器：恢复完成后切换激活标签
+    if (monitorId) {
+      send({ type: 'activateMonitor', monitorId });
+    }
+
+    // 补充推送各监视器的周期发送状态；已连接的再补连接状态与计数（webview 恢复时默认 disconnected）
     for (const rt of this._host.list().map((info) => this._host.runtime(info.id)!)) {
+      // 周期发送状态：新视口打开时与已有视口一致（勾选 + 周期数值）
+      send({
+        type: 'periodicState',
+        monitorId: rt.meta.id,
+        ...this._host.periodicState(rt.meta.id),
+      });
       if (rt.manager.isConnected) {
-        this.postMessage({
+        send({
           type: 'updateStatus',
           monitorId: rt.meta.id,
           connected: true,
@@ -304,7 +564,7 @@ export class SerialPanelProvider implements vscode.WebviewViewProvider, vscode.D
           baudRate: rt.manager.currentBaudRate,
           parity: rt.manager.config.parity,
         });
-        this.postMessage({
+        send({
           type: 'updateCounters',
           monitorId: rt.meta.id,
           rx: rt.manager.rxBytes,
@@ -314,10 +574,16 @@ export class SerialPanelProvider implements vscode.WebviewViewProvider, vscode.D
     }
   }
 
-  private _setupWebviewMessageHandler(webview: vscode.Webview): void {
+  private _setupWebviewMessageHandler(webview: vscode.Webview, boundMonitorId?: string): void {
     webview.onDidReceiveMessage(async (data) => {
       const monitorId = typeof data.monitorId === 'string' ? data.monitorId : '';
       switch (data.type) {
+        case 'ready': {
+          // 视口脚本已注册消息监听：补发初始状态（首次下发可能早于脚本就绪而丢失）
+          this._sendInitialState(webview, boundMonitorId);
+          break;
+        }
+
         case 'refreshPorts': {
           await this.refreshPortList({ forceFull: true });
           break;
@@ -403,13 +669,57 @@ export class SerialPanelProvider implements vscode.WebviewViewProvider, vscode.D
           rt.manager.clearLog();
           rt.manager.resetCounters();
           rt.session.resetEditing();
-          this.postMessage({ type: 'clearLog', monitorId });
+          this.clearMonitorLog(monitorId);
           break;
         }
 
         case 'terminalKey': {
           const rt = this._host.runtime(monitorId);
           if (rt) { rt.session.handleKey(data.intent); }
+          break;
+        }
+
+        case 'pasteToTerminal': {
+          // Ctrl/Cmd+V：由扩展侧读取剪贴板（webview 无剪贴板读权限），写入终端输入行
+          const rt = this._host.runtime(monitorId);
+          if (!rt) { break; }
+          const text = await vscode.env.clipboard.readText();
+          if (text) { rt.session.handleKey({ type: 'paste', text }); }
+          break;
+        }
+
+        case 'requestMonitorSnapshot': {
+          // 新视口 / 切换标签：回放该监视器的日志与终端快照，两个视口数据保持一致
+          if (!monitorId) { break; }
+          const rt = this._host.runtime(monitorId);
+          const ring = this._logRings.get(monitorId);
+          void webview.postMessage({
+            type: 'monitorSnapshot',
+            monitorId,
+            entries: ring ? ring.entries.map((entry) => ({ ...entry })) : [],
+            terminal: rt ? rt.session.snapshot() : null,
+          });
+          break;
+        }
+
+        case 'setPeriodicSend': {
+          // 周期发送：宿主侧单一定时器（视口只发指令，避免双视口双发）
+          this._host.setPeriodicSend(monitorId, {
+            enabled: !!data.enabled,
+            intervalMs: Number(data.intervalMs) || 1000,
+            text: typeof data.text === 'string' ? data.text : undefined,
+            payload: typeof data.payload === 'string' ? data.payload : undefined,
+            hexSend: data.hexSend === undefined ? undefined : !!data.hexSend,
+            echo: data.echo === undefined ? undefined : !!data.echo,
+          });
+          break;
+        }
+
+        case 'openMonitorInEditor': {
+          // 标题行"展开到编辑器区"按钮：展开当前选定的监视器
+          if (monitorId) {
+            this.openMonitorInEditor(monitorId);
+          }
           break;
         }
 
@@ -446,6 +756,8 @@ export class SerialPanelProvider implements vscode.WebviewViewProvider, vscode.D
 
         case 'saveSendHistory': {
           this._host.registry.updateSendHistory(monitorId, data.history ?? []);
+          // 广播：另一视口的发送历史下拉同步更新
+          this.postMessage({ type: 'sendHistorySync', monitorId, history: data.history ?? [] });
           break;
         }
 
@@ -481,7 +793,9 @@ export class SerialPanelProvider implements vscode.WebviewViewProvider, vscode.D
         }
 
         case 'saveLogToFile': {
-          await this._saveLogToFile(data.lines ?? []);
+          // monitorId 决定默认文件名与文件头部的串口信息；缺失时回退到主监视器
+          const targetId = monitorId || this._host.list()[0]?.id || '';
+          await this._saveLogToFile(targetId, data.lines ?? []);
           break;
         }
 
@@ -507,7 +821,7 @@ export class SerialPanelProvider implements vscode.WebviewViewProvider, vscode.D
     }
   }
 
-  private _getHtmlForWebview(webview: vscode.Webview): string {
+  private _getHtmlForWebview(webview: vscode.Webview, panelMode = false): string {
     const scriptUri = webview.asWebviewUri(vscode.Uri.joinPath(this._context.extensionUri, 'media', 'main.js'));
     const styleResetUri = webview.asWebviewUri(vscode.Uri.joinPath(this._context.extensionUri, 'media', 'reset.css'));
     const styleVSCodeUri = webview.asWebviewUri(vscode.Uri.joinPath(this._context.extensionUri, 'media', 'vscode.css'));
@@ -538,18 +852,24 @@ export class SerialPanelProvider implements vscode.WebviewViewProvider, vscode.D
   <link href="${styleCodiconsUri}" rel="stylesheet">
   <title>Serial Agent Plus Monitor</title>
 </head>
-<body>
+<body${panelMode ? ' class="panel-view"' : ''}>
   <div class="accordion-root">
   <section id="panel-monitor" class="accordion-panel accordion-panel--monitor is-expanded" data-panel="monitor">
-    <header class="accordion-header accordion-header--static" aria-expanded="true">
-      <span class="accordion-title">Serial Monitor</span>
-    <button id="btn-add-monitor" class="accordion-header-add" type="button" title="Add Serial Monitor (max 10)">&#43;</button>
-    </header>
     <div id="accordion-body-monitor" class="accordion-body">
     <div class="monitor-panel-main">
     <div class="monitor-tabs-wrap">
       <div id="monitor-tabs-slider" class="monitor-tabs-slider" aria-hidden="true"><div class="monitor-tabs-slider-thumb"></div></div>
+    <div class="monitor-tabs-scroll">
       <div id="monitor-tabs" class="monitor-tabs" aria-label="Serial monitors"></div>
+      <button id="btn-add-monitor" class="monitor-tabs-add" type="button" title="Add Serial Monitor (max 10)">&#43;</button>
+    </div>
+    </div>
+    <div class="monitor-title-row">
+    <span id="monitor-name-title" class="monitor-title-row-name" title="1=Serial Monitor1 (double-click to rename)">1=Serial Monitor1</span>
+    <span class="spacer"></span>
+    <button id="btn-monitor-expand" class="monitor-row-btn" type="button" title="Open this monitor in the editor area">
+      <span class="codicon codicon-link-external" aria-hidden="true"></span>
+    </button>
     </div>
     <div class="monitor-status-bar">
       <span id="status-dot" class="status-indicator status-disconnected"></span>
@@ -738,4 +1058,11 @@ export class SerialPanelProvider implements vscode.WebviewViewProvider, vscode.D
 
 function getNonce(): string {
   return crypto.randomBytes(16).toString('hex');
+}
+
+/** 字节数可读化（与 webview 的日志计数显示一致） */
+function formatByteCount(bytes: number): string {
+  if (bytes < 1024) { return `${bytes} B`; }
+  if (bytes < 1048576) { return `${(bytes / 1024).toFixed(1)} KB`; }
+  return `${(bytes / 1048576).toFixed(1)} MB`;
 }

@@ -25,7 +25,7 @@ AI Client
   -> Serial Agent Plus MCP tools
   -> Local Bridge
   -> Serial Agent Plus VS Code extension
-  -> Serial port
+  -> Serial port(s)
 ```
 
 Key boundaries:
@@ -41,6 +41,44 @@ Agent rule:
 - Do not assume direct Bridge REST access is available to the model.
 - If MCP calls fail because the Bridge is unavailable, diagnose that as a local
   runtime/setup issue, not as missing business logic.
+
+## Multi-Monitor Model (P3)
+
+The extension manages up to **10 Serial Monitors**. Each monitor owns its own
+serial connection, log buffer, and display config. Monitors are addressed by
+**index** (`"1"`..`"10"`, stable per monitor) or **unique name**
+(case-insensitive). All monitor-scoped tools accept an optional `monitor`
+argument:
+
+- exactly one monitor exists → omit `monitor` (it is the default)
+- several monitors exist → omitting `monitor` fails with `MONITOR_REQUIRED`
+  and the error lists all candidates (`index=name (+ port)`); retry with an
+  explicit `monitor`
+- prefer **index** references in scripts (a rename never invalidates them);
+  names are fine interactively
+
+### Decision flow: always start with `list_monitors`
+
+1. `list_monitors` → see indexes, names, connection state, ports, configs.
+2. Reuse: a monitor already connected to the target port with the right
+   settings → operate on it directly.
+3. Reconfigure: right monitor, wrong display settings →
+   `update_monitor_config`; wrong port/baud → `disconnect_serial` +
+   `connect_serial` on that monitor.
+4. Create: no suitable monitor → `create_monitor` (optional unique name),
+   then `connect_serial` with `monitor`.
+5. Recreate: a monitor holds a name/index you need but is stale →
+   `delete_monitor` + `create_monitor` (index is recycled smallest-first).
+
+Port-conflict rules (avoid mid-session surprises):
+
+- A port already opened by another monitor is **rejected**; the error names
+  the owner (`2=RTT (COM3 @ 115200)`). Do not retry blindly — either use that
+  monitor or `disconnect_serial` on it first.
+- Before connecting to a shared-USB adapter port, check `list_monitors` for
+  an existing holder.
+- Housekeeping: `delete_monitor` silently disconnects first; the last
+  remaining monitor cannot be deleted (`MONITOR_MINIMUM`).
 
 ## Expected Environment
 
@@ -91,6 +129,10 @@ Typical examples:
 - `list_serial_ports`: inspect available serial devices before choosing a port.
 - `read_serial_log`: inspect recent buffered log lines.
 - `wait_for_output`: wait for matching serial output without sending data.
+- `list_monitors`: list all Serial Monitors (index, name, connection state,
+  counters, config). Call this first when several monitors exist to pick a
+  target.
+- `get_monitor_config`: inspect the serial/display config of one monitor.
 
 ### Serial side-effect tools
 
@@ -101,6 +143,24 @@ Typical examples:
   operation.
 - `clear_serial_log`: clear buffered logs and counters before sensitive
   verification.
+
+### Monitor management tools (local state)
+
+- `create_monitor`: create a new monitor (max 10); does not open any port.
+- `delete_monitor`: delete a monitor (silently disconnects first); the last
+  remaining monitor cannot be deleted.
+- `rename_monitor`: rename a monitor; names are unique, the index never
+  changes.
+- `update_monitor_config`: update display-level config (lineEnding, encoding,
+  hexMode, showTimestamp, rxIdleWrapMs, flowControl, logBufferKB). Connection
+  parameters (port/baud/...) are set at connect time.
+
+### Targeting a monitor
+
+All serial tools accept an optional `monitor` parameter (index like `"2"` or
+unique name like `"RTT"`). With a single monitor it defaults to that one; with
+several, omitting it returns `MONITOR_REQUIRED` plus the candidate list — call
+`list_monitors` and retry with an explicit target.
 
 ## Decision Rules
 

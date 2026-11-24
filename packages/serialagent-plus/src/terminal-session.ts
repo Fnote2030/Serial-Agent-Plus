@@ -30,6 +30,7 @@ export interface TerminalState {
 /** 视口发来的按键意图（webview keydown 归一化后的抽象） */
 export type TerminalKeyIntent =
   | { type: 'print'; ch: string }
+  | { type: 'paste'; text: string }
   | { type: 'backspace' }
   | { type: 'delete' }
   | { type: 'move'; delta: -1 | 1 }
@@ -53,6 +54,8 @@ export interface TerminalSessionEvents {
 const MAX_TERMINAL_HISTORY = 50;
 const HISTORY_RESTORE_MS = 200;
 const SYNC_DEACTIVATE_MS = 200;
+/** 单次粘贴写入的上限（字符）：避免超长剪贴板内容撑爆输入行/串口写入 */
+const MAX_PASTE_CHARS = 4096;
 
 export class TerminalSession {
   private _buffer = '';
@@ -155,6 +158,22 @@ export class TerminalSession {
         this._events.onStateChange?.();
         return;
       }
+      case 'paste': {
+        // 粘贴等价于逐字键入：写入光标处；换行处按行提交（与真实终端一致）
+        const text = String(intent.text ?? '');
+        if (!text) { return; }
+        const segments = text.replace(/\r\n?/g, '\n').split('\n');
+        let changed = false;
+        for (let i = 0; i < segments.length; i++) {
+          if (this._insertText(segments[i])) { changed = true; }
+          if (i < segments.length - 1) {
+            this._submitLine();
+            changed = true;
+          }
+        }
+        if (changed) { this._events.onStateChange?.(); }
+        return;
+      }
       case 'backspace': {
         if (this._caret > 0) {
           this._buffer = this._buffer.slice(0, this._caret - 1) + this._buffer.slice(this._caret);
@@ -187,18 +206,7 @@ export class TerminalSession {
         return;
       }
       case 'enter': {
-        const line = this._buffer;
-        this._buffer = '';
-        this._caret = 0;
-        this._tabSync.active = false;
-        this._historySync = false;
-        this._clearSyncTimers();
-        this._cancelHistoryRestore();
-        if (line.trim()) { this._pushHistory(line); }
-        // 终端回车固定发送 CR；设备行已同步时只补 CR，本地改过则先退格清空设备行
-        this._events.onTx?.(reconcileBytes(this._deviceLine, line, '\r'));
-        this._deviceLine = null;
-        this._events.onStateChange?.();
+        this._submitLine();
         return;
       }
       case 'tab': {
@@ -260,9 +268,36 @@ export class TerminalSession {
     }
   }
 
+  /** 把文本插入光标处（粘贴用）：制表符转空格，其余控制字符丢弃；超长截断 */
+  private _insertText(text: string): boolean {
+    if (!text) { return false; }
+    const clean = text.replace(/\t/g, ' ').replace(/[\u0000-\u001f\u007f]/g, '');
+    const room = Math.max(0, MAX_PASTE_CHARS - this._buffer.length);
+    const chunk = clean.slice(0, room);
+    if (!chunk) { return false; }
+    this._buffer = this._buffer.slice(0, this._caret) + chunk + this._buffer.slice(this._caret);
+    this._caret += chunk.length;
+    return true;
+  }
+
+  /** 提交当前输入行（Enter / 粘贴换行）：发送对齐后的整行 + CR */
+  private _submitLine(): void {
+    const line = this._buffer;
+    this._buffer = '';
+    this._caret = 0;
+    this._tabSync.active = false;
+    this._historySync = false;
+    this._clearSyncTimers();
+    this._cancelHistoryRestore();
+    if (line.trim()) { this._pushHistory(line); }
+    // 终端回车固定发送 CR；设备行已同步时只补 CR，本地改过则先退格清空设备行
+    this._events.onTx?.(reconcileBytes(this._deviceLine, line, '\r'));
+    this._deviceLine = null;
+    this._events.onStateChange?.();
+  }
+
   /** msh 在最旧历史条目再按 ↑ 不重绘：超时未同步则恢复按键前的本地输入行 */
-  private _restorePendingHistoryLine(): void {
-    this._historyRestoreTimer = null;
+  private _restorePendingHistoryLine(): void {    this._historyRestoreTimer = null;
     if (!this._historyRestore) { return; }
     this._buffer = this._historyRestore.buffer;
     this._caret = this._historyRestore.caret;

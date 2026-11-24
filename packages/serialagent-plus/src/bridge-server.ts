@@ -20,14 +20,32 @@ import * as os from 'os';
 import { ISerialManager, ILogger, SerialConfig } from './types';
 import { encodeSerialText } from './text-codec';
 
+/** Bridge 使用的监视器运行时（MonitorHost 结构性满足，测试可用桩实现） */
+export interface BridgeMonitorRuntime {
+  meta: { id: string; index: number; name: string; config: SerialConfig };
+  manager: ISerialManager;
+}
+
+/** 多监视器宿主接口：bridge 按监视器路由与管理的全部依赖 */
+export interface BridgeHost {
+  list(): Array<{ id: string; index: number; name: string; connected: boolean; port: string; baudRate: number }>;
+  runtimeByRef(ref: number | string): BridgeMonitorRuntime | undefined;
+  primary(): BridgeMonitorRuntime;
+  createMonitor(name?: string): { id: string; index: number; name: string };
+  deleteMonitor(id: string): void;
+  renameMonitor(id: string, name: string): { id: string; index: number; name: string };
+  updateMonitorConfig(id: string, partial: Partial<SerialConfig>): SerialConfig;
+  connect(id: string, config: SerialConfig): Promise<{ ok: boolean; error?: string }>;
+}
+
 export class BridgeServer {
   private _server: http.Server | null = null;
   private _token = '';
   private _port = 0;
   private _instanceId = '';
-  private _serialManager: ISerialManager;
+  private _host: BridgeHost;
   private _logger: ILogger;
-  private _onUiClear: (() => void) | null = null;
+  private _onUiClear: ((monitorId: string) => void) | null = null;
 
   /** 进行中的 wait 请求取消函数列表（S2.05: 优雅关闭用） */
   private _activeWaiters: Set<() => void> = new Set();
@@ -36,15 +54,15 @@ export class BridgeServer {
   private _authEnabled: boolean;
   private _version: string;
 
-  constructor(sm: ISerialManager, logger: ILogger, authEnabled = true, version = '0.0.0') {
-    this._serialManager = sm;
+  constructor(host: BridgeHost, logger: ILogger, authEnabled = true, version = '0.0.0') {
+    this._host = host;
     this._logger = logger;
     this._authEnabled = authEnabled;
     this._version = version;
   }
 
-  /** 设置 UI 同步回调：Bridge API 清空日志时通知 Webview */
-  setOnUiClear(cb: () => void): void { this._onUiClear = cb; }
+  /** 设置 UI 同步回调：Bridge API 清空日志时通知 Webview（携带监视器 id） */
+  setOnUiClear(cb: (monitorId: string) => void): void { this._onUiClear = cb; }
 
   get port(): number { return this._port; }
   get token(): string { return this._token; }
@@ -175,15 +193,40 @@ export class BridgeServer {
     const method = req.method ?? 'GET';
 
     try {
-      if      (method === 'GET'  && pathname === '/api/status')     { await this._handleStatus(res); }
+      // 多监视器管理路由：/api/monitors[/{ref}[/rename|/config]]
+      // 路径段是百分号编码的（MCP 侧 encodeURIComponent）：先解码再按 index/name 寻址
+      const monitorMatch = pathname.match(/^\/api\/monitors(?:\/([^/]+))?(?:\/(rename|config))?$/);
+      if (monitorMatch) {
+        let monitorRef: string | undefined;
+        if (monitorMatch[1]) {
+          try {
+            monitorRef = decodeURIComponent(monitorMatch[1]);
+          } catch {
+            monitorRef = undefined; // 非法转义序列：按找不到处理
+          }
+          if (monitorRef === '') { monitorRef = undefined; }
+        }
+        if (method === 'GET' && !monitorRef) { await this._handleMonitorsList(res); }
+        else if (method === 'POST' && !monitorRef) { await this._handleMonitorCreate(req, res); }
+        else if (method === 'DELETE' && monitorRef && !monitorMatch[2]) { await this._handleMonitorDelete(res, monitorRef); }
+        else if (method === 'POST' && monitorRef && monitorMatch[2] === 'rename') { await this._handleMonitorRename(req, res, monitorRef); }
+        else if (method === 'GET' && monitorRef && monitorMatch[2] === 'config') { await this._handleMonitorConfigGet(res, monitorRef); }
+        else if (method === 'POST' && monitorRef && monitorMatch[2] === 'config') { await this._handleMonitorConfigSet(req, res, monitorRef); }
+        else {
+          this._jsonError(res, 404, 'NOT_FOUND', `Not found: ${method} ${pathname}`, { method, path: pathname });
+        }
+        return;
+      }
+
+      if      (method === 'GET'  && pathname === '/api/status')     { await this._handleStatus(res, url); }
       else if (method === 'GET'  && pathname === '/api/ports')      { await this._handlePorts(res); }
       else if (method === 'POST' && pathname === '/api/connect')    { await this._handleConnect(req, res); }
-      else if (method === 'POST' && pathname === '/api/disconnect') { await this._handleDisconnect(res); }
+      else if (method === 'POST' && pathname === '/api/disconnect') { await this._handleDisconnect(req, res); }
       else if (method === 'GET'  && pathname === '/api/log')        { await this._handleLog(res, url); }
       else if (method === 'POST' && pathname === '/api/send')       { await this._handleSend(req, res); }
       else if (method === 'GET'  && pathname === '/api/log/wait')   { await this._handleLogWait(res, url); }
       else if (method === 'POST' && pathname === '/api/send-and-wait') { await this._handleSendAndWait(req, res); }
-      else if (method === 'POST' && pathname === '/api/clear')      { await this._handleClear(res); }
+      else if (method === 'POST' && pathname === '/api/clear')      { await this._handleClear(req, res); }
       else {
         this._jsonError(res, 404, 'NOT_FOUND', `Not found: ${method} ${pathname}`, {
           method,
@@ -280,12 +323,48 @@ export class BridgeServer {
 
   // ---- API Handlers (S1.03 ~ S1.09) ----
 
-  /** S1.03: GET /api/status */
-  private async _handleStatus(res: http.ServerResponse): Promise<void> {
-    const connected = this._serialManager.isConnected;
-    const rxBytes = this._serialManager.rxBytes;
-    const txBytes = this._serialManager.txBytes;
-    const bufferedLines = this._serialManager.getLogBuffer().length;
+  /** 可用监视器摘要（错误响应中帮助 Agent 自选择） */
+  private _monitorSummaries(): string[] {
+    return this._host.list().map((m) => `${m.index}=${m.name}${m.connected ? ` (${m.port} @ ${m.baudRate})` : ''}`);
+  }
+
+  /**
+   * 解析请求目标监视器：显式 monitor 参数（index/name）→ 对应运行时；
+   * 缺省时恰有一个监视器则默认它，多个则报错并列出候选。
+   * 失败时已写入错误响应，返回 null。
+   */
+  private _resolveMonitor(res: http.ServerResponse, monitor?: unknown): BridgeMonitorRuntime | null {
+    const raw = monitor === undefined || monitor === null ? '' : String(monitor).trim();
+    if (raw !== '') {
+      const rt = this._host.runtimeByRef(raw);
+      if (!rt) {
+        this._jsonError(res, 404, 'MONITOR_NOT_FOUND', `Monitor not found: ${raw}`, {
+          monitor: raw,
+          monitors: this._monitorSummaries(),
+        });
+        return null;
+      }
+      return rt;
+    }
+    const list = this._host.list();
+    if (list.length > 1) {
+      this._jsonError(res, 400, 'MONITOR_REQUIRED', 'Multiple monitors exist; specify "monitor" (index or name)', {
+        monitors: this._monitorSummaries(),
+      });
+      return null;
+    }
+    return this._host.primary();
+  }
+
+  /** S1.03: GET /api/status?monitor= */
+  private async _handleStatus(res: http.ServerResponse, url: URL): Promise<void> {
+    const rt = this._resolveMonitor(res, url.searchParams.get('monitor'));
+    if (!rt) { return; }
+    const sm = rt.manager;
+    const connected = sm.isConnected;
+    const rxBytes = sm.rxBytes;
+    const txBytes = sm.txBytes;
+    const bufferedLines = sm.getLogBuffer().length;
 
     // 当 connected=false 但有历史活动数据时，附加提示帮助 AI 判断
     let statusHint: string | undefined;
@@ -295,13 +374,14 @@ export class BridgeServer {
     }
 
     const result: Record<string, unknown> = {
+      monitor: `${rt.meta.index}=${rt.meta.name}`,
       connected,
-      port: this._serialManager.currentPath,
-      baudRate: this._serialManager.currentBaudRate,
+      port: sm.currentPath,
+      baudRate: sm.currentBaudRate,
       rxBytes,
       txBytes,
       bufferedLines,
-      isReconnecting: this._serialManager.isReconnecting,
+      isReconnecting: sm.isReconnecting,
     };
     if (statusHint) { result.statusHint = statusHint; }
     this._json(res, 200, result);
@@ -309,13 +389,15 @@ export class BridgeServer {
 
   /** S1.04: GET /api/ports */
   private async _handlePorts(res: http.ServerResponse): Promise<void> {
-    const ports = await this._serialManager.listPorts();
+    const ports = await this._host.primary().manager.listPorts();
     this._json(res, 200, { ports });
   }
 
-  /** S1.05: POST /api/connect */
+  /** S1.05: POST /api/connect { port, ..., monitor? } */
   private async _handleConnect(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
     const body = await this._readBody(req);
+    const rt = this._resolveMonitor(res, body.monitor);
+    if (!rt) { return; }
     if (!body.port || typeof body.port !== 'string') {
       this._jsonError(res, 400, 'MISSING_REQUIRED_FIELD', 'Missing required field: port', { field: 'port' });
       return;
@@ -362,56 +444,65 @@ export class BridgeServer {
       parity,
       stopBits,
       flowControl,
-      // 保留当前显示设置
-      lineEnding: this._serialManager.config.lineEnding,
-      showTimestamp: this._serialManager.config.showTimestamp,
-      hexMode: this._serialManager.config.hexMode,
-      rxIdleWrapMs: this._serialManager.config.rxIdleWrapMs,
-      logBufferKB: this._serialManager.config.logBufferKB,
-      encoding: this._serialManager.config.encoding,
+      // 保留该监视器当前显示设置
+      lineEnding: rt.manager.config.lineEnding,
+      showTimestamp: rt.manager.config.showTimestamp,
+      hexMode: rt.manager.config.hexMode,
+      rxIdleWrapMs: rt.manager.config.rxIdleWrapMs,
+      logBufferKB: rt.manager.config.logBufferKB,
+      encoding: rt.manager.config.encoding,
     };
-    const ok = await this._serialManager.connect(config);
-    if (ok) {
-      this._json(res, 200, { success: true, message: `Connected to ${config.port} @ ${config.baudRate}` });
+    // 走宿主连接：含端口占用冲突检测（错误信息指明占用者）
+    const result = await this._host.connect(rt.meta.id, config);
+    if (result.ok) {
+      this._json(res, 200, { success: true, message: `Connected to ${config.port} @ ${config.baudRate}`, monitor: `${rt.meta.index}=${rt.meta.name}` });
     } else {
-      this._jsonError(res, 400, 'SERIAL_CONNECT_FAILED', `Failed to connect to ${config.port}`, { port: config.port });
+      this._jsonError(res, 400, 'SERIAL_CONNECT_FAILED', result.error ?? `Failed to connect to ${config.port}`, { port: config.port });
     }
   }
 
-  /** S1.06: POST /api/disconnect */
-  private async _handleDisconnect(res: http.ServerResponse): Promise<void> {
-    await this._serialManager.disconnect();
-    this._json(res, 200, { success: true });
+  /** S1.06: POST /api/disconnect { monitor? } */
+  private async _handleDisconnect(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
+    const body = await this._readBody(req);
+    const rt = this._resolveMonitor(res, body.monitor);
+    if (!rt) { return; }
+    await rt.manager.disconnect();
+    this._json(res, 200, { success: true, monitor: `${rt.meta.index}=${rt.meta.name}` });
   }
 
-  /** S1.07: GET /api/log?lines=50 */
+  /** S1.07: GET /api/log?lines=50&monitor= */
   private async _handleLog(res: http.ServerResponse, url: URL): Promise<void> {
+    const rt = this._resolveMonitor(res, url.searchParams.get('monitor'));
+    if (!rt) { return; }
     const linesParam = url.searchParams.get('lines');
     const lines = linesParam ? Math.max(1, parseInt(linesParam, 10) || 50) : 50;
-    const buffer = this._serialManager.getLogBuffer();
+    const buffer = rt.manager.getLogBuffer();
     this._json(res, 200, {
+      monitor: `${rt.meta.index}=${rt.meta.name}`,
       lines: buffer.slice(-lines),
       totalBuffered: buffer.length,
     });
   }
 
-  /** S1.08: POST /api/send */
+  /** S1.08: POST /api/send { data, ..., monitor? } */
   private async _handleSend(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
     const body = await this._readBody(req);
+    const rt = this._resolveMonitor(res, body.monitor);
+    if (!rt) { return; }
     if (body.data === undefined || body.data === null) {
       this._jsonError(res, 400, 'MISSING_REQUIRED_FIELD', 'Missing required field: data', { field: 'data' });
       return;
     }
-    if (!this._serialManager.isConnected) {
+    if (!rt.manager.isConnected) {
       this._jsonError(res, 400, 'SERIAL_NOT_CONNECTED', 'Not connected to any serial port');
       return;
     }
     const data = String(body.data);
     const hexMode = (body.hexMode as boolean) ?? false;
-    const lineEnding = (body.lineEnding as string) ?? this._serialManager.config.lineEnding;
-    const result = await this._sendAndEcho(data, hexMode, lineEnding);
+    const lineEnding = (body.lineEnding as string) ?? rt.manager.config.lineEnding;
+    const result = await this._sendAndEcho(rt, data, hexMode, lineEnding);
     if (result.ok) {
-      this._json(res, 200, { success: true, bytesSent: result.bytesSent });
+      this._json(res, 200, { success: true, bytesSent: result.bytesSent, monitor: `${rt.meta.index}=${rt.meta.name}` });
     } else {
       this._jsonError(res, 400, 'SERIAL_SEND_FAILED', 'Send failed (check HEX format or connection)');
     }
@@ -431,6 +522,8 @@ export class BridgeServer {
    * 如需原子性 send+wait，使用 POST /api/send-and-wait。
    */
   private async _handleLogWait(res: http.ServerResponse, url: URL): Promise<void> {
+    const rt = this._resolveMonitor(res, url.searchParams.get('monitor'));
+    if (!rt) { return; }
     const pattern = url.searchParams.get('pattern');
     if (!pattern) {
       this._jsonError(res, 400, 'MISSING_REQUIRED_PARAMETER', 'Missing required parameter: pattern', { parameter: 'pattern' });
@@ -446,7 +539,7 @@ export class BridgeServer {
 
     // Buffer Pre-scan：先扫描现有缓冲区，捕获 clear 之后、wait 之前到达的日志
     if (scanBuffer) {
-      const existingBuffer = this._serialManager.getLogBuffer();
+      const existingBuffer = rt.manager.getLogBuffer();
       recentLogs.push(...existingBuffer.slice(-50));
       for (const line of existingBuffer) {
         if (regex.test(line)) {
@@ -463,7 +556,7 @@ export class BridgeServer {
     }
 
     // 缓冲区未匹配（或 scanBuffer=false），订阅新日志等待
-    return this._waitForPattern(res, regex, timeoutSec, startTime, recentLogs);
+    return this._waitForPattern(rt, res, regex, timeoutSec, startTime, recentLogs);
   }
 
   /**
@@ -476,6 +569,8 @@ export class BridgeServer {
    */
   private async _handleSendAndWait(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
     const body = await this._readBody(req);
+    const rt = this._resolveMonitor(res, body.monitor);
+    if (!rt) { return; }
 
     if (body.data === undefined || body.data === null) {
       this._jsonError(res, 400, 'MISSING_REQUIRED_FIELD', 'Missing required field: data', { field: 'data' });
@@ -485,7 +580,7 @@ export class BridgeServer {
       this._jsonError(res, 400, 'MISSING_REQUIRED_FIELD', 'Missing required field: pattern', { field: 'pattern' });
       return;
     }
-    if (!this._serialManager.isConnected) {
+    if (!rt.manager.isConnected) {
       this._jsonError(res, 400, 'SERIAL_NOT_CONNECTED', 'Not connected to any serial port');
       return;
     }
@@ -494,13 +589,13 @@ export class BridgeServer {
     const pattern = body.pattern as string;
     const timeoutSec = Math.min(120, Math.max(1, Number(body.timeout) || 10));
     const hexMode = (body.hexMode as boolean) ?? false;
-    const lineEnding = (body.lineEnding as string) ?? this._serialManager.config.lineEnding;
+    const lineEnding = (body.lineEnding as string) ?? rt.manager.config.lineEnding;
     const regex = this._buildRegex(pattern);
     const startTime = Date.now();
     const recentLogs: string[] = [];
 
     // 关键顺序：先订阅，再发送，确保不丢失快速响应
-    this._serialManager.onNewLog(onLineCollector);
+    rt.manager.onNewLog(onLineCollector);
 
     // 临时收集器：在 _waitForPattern 建立之前先收集日志
     let earlyLines: string[] = [];
@@ -510,8 +605,8 @@ export class BridgeServer {
       if (!earlyMatch && regex.test(line)) { earlyMatch = line; }
     }
 
-    const sendResult = await this._sendAndEcho(data, hexMode, lineEnding);
-    this._serialManager.offNewLog(onLineCollector);
+    const sendResult = await this._sendAndEcho(rt, data, hexMode, lineEnding);
+    rt.manager.offNewLog(onLineCollector);
 
     if (!sendResult.ok) {
       this._jsonError(res, 400, 'SERIAL_SEND_FAILED', 'Send failed (check HEX format or connection)', {
@@ -535,7 +630,7 @@ export class BridgeServer {
     }
 
     // 未立即匹配，进入正常等待流程
-    return this._waitForPattern(res, regex, timeoutSec, startTime, recentLogs, true);
+    return this._waitForPattern(rt, res, regex, timeoutSec, startTime, recentLogs, true);
   }
 
   // ---- 共享工具方法 ----
@@ -551,9 +646,10 @@ export class BridgeServer {
 
   /** 执行发送 + Echo 注入，返回发送结果和字节数（_handleSend 和 _handleSendAndWait 共用） */
   private async _sendAndEcho(
+    rt: BridgeMonitorRuntime,
     data: string, hexMode: boolean, lineEnding: string,
   ): Promise<{ ok: boolean; bytesSent: number }> {
-    const ok = await this._serialManager.send(data, hexMode, lineEnding);
+    const ok = await rt.manager.send(data, hexMode, lineEnding);
     if (!ok) { return { ok: false, bytesSent: 0 }; }
 
     let bytesSent: number;
@@ -561,14 +657,15 @@ export class BridgeServer {
       bytesSent = data.replace(/\s+/g, '').length / 2;
     } else {
       const suffixes: Record<string, string> = { lf: '\n', crlf: '\r\n', cr: '\r', none: '' };
-      bytesSent = encodeSerialText(data + (suffixes[lineEnding] ?? '\n'), this._serialManager.config.encoding).length;
+      bytesSent = encodeSerialText(data + (suffixes[lineEnding] ?? '\n'), rt.manager.config.encoding).length;
     }
-    this._serialManager.injectTxLog(data);
+    rt.manager.injectTxLog(data);
     return { ok: true, bytesSent };
   }
 
   /** 订阅新日志并等待 pattern 匹配（wait_for_output 和 send_and_wait 共用） */
   private _waitForPattern(
+    rt: BridgeMonitorRuntime,
     res: http.ServerResponse,
     regex: RegExp,
     timeoutSec: number,
@@ -583,7 +680,7 @@ export class BridgeServer {
       const cleanup = () => {
         if (settled) { return; }
         settled = true;
-        this._serialManager.offNewLog(onLine);
+        rt.manager.offNewLog(onLine);
         clearTimeout(timer);
         this._activeWaiters.delete(cancel);
       };
@@ -634,15 +731,113 @@ export class BridgeServer {
       };
 
       this._activeWaiters.add(cancel);
-      this._serialManager.onNewLog(onLine);
+      rt.manager.onNewLog(onLine);
     });
   }
 
-  /** S1.09: POST /api/clear */
-  private async _handleClear(res: http.ServerResponse): Promise<void> {
-    this._serialManager.clearLog();
-    this._serialManager.resetCounters();
-    this._onUiClear?.();
-    this._json(res, 200, { success: true });
+  /** S1.09: POST /api/clear { monitor? } */
+  private async _handleClear(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
+    const body = await this._readBody(req);
+    const rt = this._resolveMonitor(res, body.monitor);
+    if (!rt) { return; }
+    rt.manager.clearLog();
+    rt.manager.resetCounters();
+    this._onUiClear?.(rt.meta.id);
+    this._json(res, 200, { success: true, monitor: `${rt.meta.index}=${rt.meta.name}` });
+  }
+
+  // ---- 多监视器管理端点 ----
+
+  /** GET /api/monitors：列表 + 连接状态 + 配置 + 计数 */
+  private async _handleMonitorsList(res: http.ServerResponse): Promise<void> {
+    const monitors = this._host.list().map((info) => {
+      const rt = this._host.runtimeByRef(info.index);
+      return {
+        id: info.id,
+        index: info.index,
+        name: info.name,
+        label: `${info.index}=${info.name}`,
+        connected: info.connected,
+        port: info.connected ? info.port : rt?.meta.config.port ?? '',
+        baudRate: info.connected ? info.baudRate : rt?.meta.config.baudRate ?? 0,
+        rxBytes: rt?.manager.rxBytes ?? 0,
+        txBytes: rt?.manager.txBytes ?? 0,
+        bufferedLines: rt?.manager.getLogBuffer().length ?? 0,
+        config: rt?.meta.config ?? undefined,
+      };
+    });
+    this._json(res, 200, { monitors, count: monitors.length });
+  }
+
+  /** POST /api/monitors { name? } */
+  private async _handleMonitorCreate(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
+    const body = await this._readBody(req);
+    try {
+      const created = this._host.createMonitor(typeof body.name === 'string' ? body.name : undefined);
+      this._json(res, 201, { success: true, monitor: created, label: `${created.index}=${created.name}` });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      const code = /limit reached/i.test(msg) ? 'MONITOR_LIMIT_REACHED' : 'INVALID_ARGUMENT';
+      this._jsonError(res, /limit reached/i.test(msg) ? 409 : 400, code, msg);
+    }
+  }
+
+  /** DELETE /api/monitors/{ref}：静默断开后删除 */
+  private async _handleMonitorDelete(res: http.ServerResponse, ref: string): Promise<void> {
+    const rt = this._resolveMonitor(res, ref);
+    if (!rt) { return; }
+    try {
+      this._host.deleteMonitor(rt.meta.id);
+      this._json(res, 200, { success: true, deleted: `${rt.meta.index}=${rt.meta.name}` });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      this._jsonError(res, /must remain/i.test(msg) ? 409 : 500, /must remain/i.test(msg) ? 'MONITOR_MINIMUM' : 'INTERNAL_SERVER_ERROR', msg);
+    }
+  }
+
+  /** POST /api/monitors/{ref}/rename { name } */
+  private async _handleMonitorRename(req: http.IncomingMessage, res: http.ServerResponse, ref: string): Promise<void> {
+    const rt = this._resolveMonitor(res, ref);
+    if (!rt) { return; }
+    const body = await this._readBody(req);
+    if (!body.name || typeof body.name !== 'string') {
+      this._jsonError(res, 400, 'MISSING_REQUIRED_FIELD', 'Missing required field: name', { field: 'name' });
+      return;
+    }
+    try {
+      const renamed = this._host.renameMonitor(rt.meta.id, body.name);
+      this._json(res, 200, { success: true, monitor: renamed, label: `${renamed.index}=${renamed.name}` });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      this._jsonError(res, 400, 'INVALID_ARGUMENT', msg);
+    }
+  }
+
+  /** GET /api/monitors/{ref}/config */
+  private async _handleMonitorConfigGet(res: http.ServerResponse, ref: string): Promise<void> {
+    const rt = this._resolveMonitor(res, ref);
+    if (!rt) { return; }
+    this._json(res, 200, { monitor: `${rt.meta.index}=${rt.meta.name}`, config: rt.manager.config });
+  }
+
+  /** POST /api/monitors/{ref}/config { partial }：更新显示类配置（连接参数在 connect 时指定） */
+  private async _handleMonitorConfigSet(req: http.IncomingMessage, res: http.ServerResponse, ref: string): Promise<void> {
+    const rt = this._resolveMonitor(res, ref);
+    if (!rt) { return; }
+    const body = await this._readBody(req);
+    const allowed: Array<keyof SerialConfig> = ['lineEnding', 'showTimestamp', 'hexMode', 'encoding', 'rxIdleWrapMs', 'logBufferKB', 'flowControl'];
+    const partial: Partial<SerialConfig> = {};
+    for (const key of allowed) {
+      if (body[key] !== undefined) {
+        (partial as Record<string, unknown>)[key] = body[key];
+      }
+    }
+    if (Object.keys(partial).length === 0) {
+      this._jsonError(res, 400, 'INVALID_ARGUMENT', `No updatable fields; allowed: ${allowed.join(', ')}`);
+      return;
+    }
+    rt.manager.updateSettings(partial);
+    const config = this._host.updateMonitorConfig(rt.meta.id, partial);
+    this._json(res, 200, { success: true, monitor: `${rt.meta.index}=${rt.meta.name}`, config });
   }
 }

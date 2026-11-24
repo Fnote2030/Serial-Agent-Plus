@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Serial Agent Plus 主图标源文件（渲染到 media/SerialAgentPlus.png） -->
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256">
+  <!-- 外框徽章 -->
+  <rect x="10" y="10" width="236" height="236" rx="46" fill="#ffffff" stroke="#0b2b49" stroke-width="12"/>
+
+  <!-- 串口监视器屏幕 -->
+  <rect x="54" y="42" width="148" height="82" rx="12" fill="none" stroke="#0f6fbe" stroke-width="10"/>
+
+  <!-- 屏内方波信号 -->
+  <path d="M74 86 H98 V62 H122 V104 H146 V86 H182"
+        fill="none" stroke="#0f6fbe" stroke-width="8"
+        stroke-linecap="butt" stroke-linejoin="miter"/>
+
+  <!-- 底座 -->
+  <path d="M128 124 V146" fill="none" stroke="#0f6fbe" stroke-width="10" stroke-linecap="round"/>
+  <path d="M106 150 H150" fill="none" stroke="#0f6fbe" stroke-width="10" stroke-linecap="round"/>
+
+  <!-- 项目名称 -->
+  <text x="128" y="196" text-anchor="middle"
+        font-family="Segoe UI, Arial, Helvetica, sans-serif" font-size="32" font-weight="700"
+        fill="#0b2b49">Serial Agent</text>
+  <text x="128" y="230" text-anchor="middle"
+        font-family="Segoe UI, Arial, Helvetica, sans-serif" font-size="28" font-weight="700"
+        fill="#0f6fbe">Plus</text>
+</svg>

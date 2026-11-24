@@ -14,28 +14,6 @@ let statusBarItem: vscode.StatusBarItem;
 let bridgeStatusBarItem: vscode.StatusBarItem;
 let bridgeRunning = false;
 
-async function waitForWebviewPanelToBeActive(panel: vscode.WebviewPanel): Promise<void> {
-  if (panel.active) {
-    return;
-  }
-
-  await new Promise<void>((resolve) => {
-    const disposable = panel.onDidChangeViewState((event) => {
-      if (!event.webviewPanel.active) {
-        return;
-      }
-      disposable.dispose();
-      resolve();
-    });
-  });
-}
-
-async function revealAndLockPanel(panel: vscode.WebviewPanel): Promise<void> {
-  panel.reveal(undefined, false);
-  await waitForWebviewPanelToBeActive(panel);
-  await vscode.commands.executeCommand('workbench.action.lockEditorGroup');
-}
-
 function updateBridgeStatusBar(): void {
   if (bridgeRunning) {
     bridgeStatusBarItem.text = '$(broadcast) SA Bridge Ready';
@@ -60,6 +38,14 @@ function updateStatusBarAggregate(): void {
   statusBarItem.backgroundColor = undefined;
 }
 
+/** 上下文键 serialagent.monitorN：控制编辑器标题下拉里"Monitor N"项按已分配序号显示 */
+function syncMonitorContextKeys(): void {
+  const used = new Set(monitorHost.list().map((m) => m.index));
+  for (let i = 1; i <= 10; i++) {
+    void vscode.commands.executeCommand('setContext', `serialagent.monitor${i}`, used.has(i));
+  }
+}
+
 export function activate(context: vscode.ExtensionContext) {
   bridgeStatusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 101);
   bridgeStatusBarItem.command = 'serialagent.toggleBridge';
@@ -79,11 +65,15 @@ export function activate(context: vscode.ExtensionContext) {
     if (event.type === 'metas' || event.type === 'status') {
       updateStatusBarAggregate();
     }
+    if (event.type === 'metas') {
+      syncMonitorContextKeys();
+    }
   });
   context.subscriptions.push(monitorHost);
+  syncMonitorContextKeys();
 
-  // P1/P2：bridge 绑定主监视器（列表第一个）；P3 将按监视器路由
-  bridgeServer = new BridgeServer(monitorHost.primary().manager, bridgeOutputChannel, true, extensionPkgVersion);
+  // P3：bridge 按监视器路由（MonitorHost 实现 BridgeHost 接口）
+  bridgeServer = new BridgeServer(monitorHost, bridgeOutputChannel, true, extensionPkgVersion);
 
   const provider = new SerialPanelProvider(context, monitorHost, () => { updateStatusBarAggregate(); });
   serialPanelProviderRef = provider;
@@ -96,8 +86,8 @@ export function activate(context: vscode.ExtensionContext) {
     }),
   );
 
-  bridgeServer.setOnUiClear(() => {
-    provider.postMessage({ type: 'clearLog' });
+  bridgeServer.setOnUiClear((monitorId) => {
+    provider.clearMonitorLog(monitorId);
   });
   bridgeServer.start().then(() => {
     bridgeRunning = true;
@@ -149,7 +139,7 @@ export function activate(context: vscode.ExtensionContext) {
       rt.manager.clearLog();
       rt.manager.resetCounters();
       rt.session.resetEditing();
-      serialPanelProviderRef?.postMessage({ type: 'clearLog', monitorId: rt.meta.id });
+      serialPanelProviderRef?.clearMonitorLog(rt.meta.id);
     }),
   );
 
@@ -178,48 +168,37 @@ export function activate(context: vscode.ExtensionContext) {
 
   context.subscriptions.push(
     vscode.commands.registerCommand('serialagent.openInTab', async () => {
-      if (provider.panel) {
-        await revealAndLockPanel(provider.panel);
-        return;
-      }
-
-      const lastVisibleColumn = Math.max(
-        ...vscode.window.visibleTextEditors.map((editor) => editor.viewColumn || 0),
-        0,
-      );
-      const hasVisibleEditors = vscode.window.visibleTextEditors.length > 0;
-
-      if (!hasVisibleEditors) {
-        await vscode.commands.executeCommand('workbench.action.newGroupRight');
-      }
-
-      const targetColumn = hasVisibleEditors
-        ? Math.max(lastVisibleColumn + 1, 1)
-        : vscode.ViewColumn.Two;
-
-      const panel = vscode.window.createWebviewPanel(
-        SerialPanelProvider.panelViewType,
-        'Serial Agent Plus',
-        targetColumn,
-        {
-          enableScripts: true,
-          retainContextWhenHidden: true,
-          localResourceRoots: [context.extensionUri],
-        },
-      );
-
-      panel.iconPath = {
-        light: vscode.Uri.joinPath(context.extensionUri, 'media', 'SerialAgentPlus.png'),
-        dark: vscode.Uri.joinPath(context.extensionUri, 'media', 'SerialAgentPlus.png'),
-      };
-
-      provider.resolveWebviewPanel(panel);
-      panel.onDidDispose(() => {
-        provider.clearPanel();
+      // 下拉菜单末尾项：Quick Pick 提供名称/连接状态等更详细的信息后打开到编辑器区
+      const infos = monitorHost.list();
+      const items = infos.map((info) => ({
+        label: `$(${info.connected ? 'plug' : 'debug-disconnect'}) ${info.index}=${info.name}`,
+        description: info.connected ? `Connected · ${info.port} @ ${info.baudRate}` : 'Disconnected',
+        id: info.id,
+      }));
+      const picked = await vscode.window.showQuickPick(items, {
+        placeHolder: 'Serial Monitors',
+        matchOnDescription: true,
       });
-      await revealAndLockPanel(panel);
+      if (picked) {
+        provider.openMonitorInEditor(picked.id);
+      }
     }),
   );
+
+  // 编辑器选项卡栏下拉"Monitor N"项：按序号展开对应监视器（可见性由 serialagent.monitorN 上下文键控制）
+  for (let index = 1; index <= 10; index++) {
+    const idx = index;
+    context.subscriptions.push(
+      vscode.commands.registerCommand(`serialagent.openMonitor${idx}`, () => {
+        const info = monitorHost.list().find((m) => m.index === idx);
+        if (info) {
+          provider.openMonitorInEditor(info.id);
+        } else {
+          vscode.window.showWarningMessage(`[Serial Agent Plus] Monitor ${idx} does not exist`);
+        }
+      }),
+    );
+  }
 
   context.subscriptions.push(
     vscode.workspace.onDidChangeConfiguration((event) => {

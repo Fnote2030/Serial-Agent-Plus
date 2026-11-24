@@ -142,6 +142,10 @@ class RealSerialManager implements ISerialManager {
     this._rxBuffer = Buffer.alloc(0);
   }
 
+  updateSettings(partial: Partial<SerialConfig>): void {
+    Object.assign(this._config, partial);
+  }
+
   resetCounters(): void {
     this._rxBytes = 0;
     this._txBytes = 0;
@@ -198,10 +202,35 @@ class ConsoleLogger implements ILogger {
   appendLine(value: string): void { console.log(value); }
 }
 
+/** 单监视器 BridgeHost 适配（real-hw 手动测试用） */
+class SingleHost {
+  constructor(private readonly sm: RealSerialManager) {}
+  list() {
+    return [{
+      id: 'm1', index: 1, name: 'Serial Monitor1',
+      connected: this.sm.isConnected, port: this.sm.currentPath, baudRate: this.sm.currentBaudRate,
+    }];
+  }
+  runtimeByRef(ref: number | string) {
+    const key = String(ref).toLowerCase();
+    if (key === '1' || key === 'serial monitor1') { return this.primary(); }
+    return undefined;
+  }
+  primary() { return { meta: { id: 'm1', index: 1, name: 'Serial Monitor1', config: this.sm.config }, manager: this.sm }; }
+  createMonitor(): never { throw new Error('Monitor limit reached (10)'); }
+  deleteMonitor(): never { throw new Error('At least one monitor must remain'); }
+  renameMonitor(): never { throw new Error('Rename not supported'); }
+  updateMonitorConfig(_id: string, partial: Partial<SerialConfig>) { this.sm.updateSettings(partial); return this.sm.config; }
+  async connect(_id: string, config: SerialConfig) {
+    const ok = await this.sm.connect(config);
+    return ok ? { ok: true } : { ok: false, error: 'Failed to connect' };
+  }
+}
+
 async function main() {
   const sm = new RealSerialManager();
   const logger = new ConsoleLogger();
-  const bridge = new BridgeServer(sm, logger);
+  const bridge = new BridgeServer(new SingleHost(sm), logger);
 
   await bridge.start();
 

@@ -96,6 +96,39 @@ function rawHttpRequest(
 
 // ---- 测试套件 ----
 
+/** 单监视器 BridgeHost 适配器：把 MockSerialManager 包成 host（bridge 按监视器路由） */
+class SingleMonitorHost {
+  readonly id = 'm1';
+  readonly index = 1;
+  readonly name = 'Serial Monitor1';
+  constructor(private readonly sm: MockSerialManager) {}
+  list() {
+    return [{
+      id: this.id, index: this.index, name: this.name,
+      connected: this.sm.isConnected, port: this.sm.currentPath, baudRate: this.sm.currentBaudRate,
+    }];
+  }
+  runtimeByRef(ref: number | string) {
+    const key = String(ref).toLowerCase();
+    if (key === '1' || key === this.name.toLowerCase()) { return this.primary(); }
+    return undefined;
+  }
+  primary() {
+    return { meta: { id: this.id, index: this.index, name: this.name, config: this.sm.config }, manager: this.sm };
+  }
+  createMonitor(): never { throw new Error('Monitor limit reached (10)'); }
+  deleteMonitor(): never { throw new Error('At least one monitor must remain'); }
+  renameMonitor(): never { throw new Error('Rename not supported by stub'); }
+  updateMonitorConfig(_id: string, partial: Partial<typeof MockSerialManager.prototype.config>) {
+    this.sm.updateSettings(partial as never);
+    return this.sm.config;
+  }
+  async connect(_id: string, config: Parameters<MockSerialManager['connect']>[0]) {
+    const ok = await this.sm.connect(config);
+    return ok ? { ok: true } : { ok: false, error: 'Failed to connect' };
+  }
+}
+
 describe('Bridge Server API', () => {
   let mock: MockSerialManager;
   let logger: SilentLogger;
@@ -111,7 +144,7 @@ describe('Bridge Server API', () => {
   beforeAll(async () => {
     mock = new MockSerialManager();
     logger = new SilentLogger();
-    bridge = new BridgeServer(mock, logger);
+    bridge = new BridgeServer(new SingleMonitorHost(mock) as never, logger);
     await bridge.start();
     port = bridge.port;
     token = bridge.token;
@@ -625,5 +658,157 @@ describe('Bridge Server API', () => {
       expect(parsed.error.code).toBe('INVALID_JSON_BODY');
       expect(parsed.error.message).toContain('Invalid JSON body');
     });
+  });
+});
+
+// ======== 多监视器管理 (P3) ========
+
+/** 可编程假宿主：内存态增删改名，manager 复用同一个 Mock */
+class FakeHost {
+  private seq = 0;
+  private monitors = new Map<string, { id: string; index: number; name: string }>();
+  constructor(private readonly sm: MockSerialManager) {
+    this.monitors.set('m1', { id: 'm1', index: 1, name: 'Serial Monitor1' });
+  }
+  private sorted() { return [...this.monitors.values()].sort((a, b) => a.index - b.index); }
+  list() {
+    return this.sorted().map((m) => ({
+      id: m.id, index: m.index, name: m.name,
+      connected: this.sm.isConnected, port: this.sm.currentPath, baudRate: this.sm.currentBaudRate,
+    }));
+  }
+  runtimeByRef(ref: number | string) {
+    const key = String(ref).toLowerCase();
+    const found = this.sorted().find((m) => String(m.index) === key || m.name.toLowerCase() === key);
+    if (!found) { return undefined; }
+    return { meta: { ...found, config: this.sm.config }, manager: this.sm };
+  }
+  primary() { return this.runtimeByRef(1)!; }
+  createMonitor(name?: string) {
+    if (this.monitors.size >= 10) { throw new Error('Monitor limit reached (10)'); }
+    const usedIndexes = new Set(this.sorted().map((m) => m.index));
+    const usedNames = new Set(this.sorted().map((m) => m.name.toLowerCase()));
+    let index = 1; while (usedIndexes.has(index)) { index++; }
+    let finalName = (name ?? '').trim() || `Serial Monitor${(() => { let i = 1; while (usedNames.has(`serial monitor${i}`)) { i++; } return i; })()}`;
+    if (usedNames.has(finalName.toLowerCase())) { throw new Error(`Name already in use: ${finalName}`); }
+    const id = `m${++this.seq + 1}`;
+    const created = { id, index, name: finalName };
+    this.monitors.set(id, created);
+    return created;
+  }
+  deleteMonitor(id: string) {
+    if (this.monitors.size <= 1) { throw new Error('At least one monitor must remain'); }
+    if (!this.monitors.has(id)) { throw new Error(`Monitor not found: ${id}`); }
+    this.monitors.delete(id);
+  }
+  renameMonitor(id: string, name: string) {
+    const m = this.monitors.get(id);
+    if (!m) { throw new Error(`Monitor not found: ${id}`); }
+    const taken = this.sorted().some((o) => o.id !== id && o.name.toLowerCase() === name.toLowerCase());
+    if (taken) { throw new Error(`Name already in use: ${name}`); }
+    m.name = name;
+    return { ...m };
+  }
+  updateMonitorConfig(_id: string, partial: Partial<MockSerialManager['config']>) {
+    this.sm.updateSettings(partial as never);
+    return this.sm.config;
+  }
+  async connect(_id: string, config: Parameters<MockSerialManager['connect']>[0]) {
+    const ok = await this.sm.connect(config);
+    return ok ? { ok: true } : { ok: false, error: 'Failed to connect' };
+  }
+}
+
+describe('Bridge Server multi-monitor management (P3)', () => {
+  let bridge2: BridgeServer;
+  let port2: number;
+  let token2: string;
+  let host: FakeHost;
+
+  function req(method: string, path: string, body?: object) {
+    return httpRequest(port2, method, path, body, { 'Authorization': `Bearer ${token2}` });
+  }
+
+  beforeAll(async () => {
+    host = new FakeHost(new MockSerialManager());
+    bridge2 = new BridgeServer(host as never, new SilentLogger());
+    await bridge2.start();
+    port2 = bridge2.port;
+    token2 = bridge2.token;
+  });
+  afterAll(async () => { await bridge2.stop(); });
+
+  it('M1: lists monitors with labels and config', async () => {
+    const res = await req('GET', '/api/monitors');
+    expect(res.status).toBe(200);
+    expect(res.data.count).toBe(1);
+    expect(res.data.monitors[0].label).toBe('1=Serial Monitor1');
+    expect(res.data.monitors[0].config).toBeTruthy();
+  });
+
+  it('M2: create assigns smallest free index/name and they are addressable', async () => {
+    const res = await req('POST', '/api/monitors', { name: 'RTT' });
+    expect(res.status).toBe(201);
+    expect(res.data.monitor.index).toBe(2);
+    expect(res.data.monitor.name).toBe('RTT');
+
+    // 多监视器存在时缺省 target 报错并列出候选
+    const err = await req('GET', '/api/status');
+    expect(err.status).toBe(400);
+    expect(err.data.error.code).toBe('MONITOR_REQUIRED');
+    expect(err.data.error.details.monitors).toContain('2=RTT');
+
+    // 按 name 路由
+    const byName = await req('GET', '/api/status?monitor=RTT');
+    expect(byName.status).toBe(200);
+    expect(byName.data.monitor).toBe('2=RTT');
+
+    // 按 index 路由
+    const byIndex = await req('GET', '/api/log?monitor=2&lines=5');
+    expect(byIndex.status).toBe(200);
+    expect(byIndex.data.monitor).toBe('2=RTT');
+
+    // 未知引用
+    const missing = await req('GET', '/api/status?monitor=9');
+    expect(missing.status).toBe(404);
+    expect(missing.data.error.code).toBe('MONITOR_NOT_FOUND');
+  });
+
+  it('M3: rename enforces uniqueness', async () => {
+    const ok = await req('POST', '/api/monitors/RTT/rename', { name: 'Debug UART' });
+    expect(ok.status).toBe(200);
+    expect(ok.data.label).toBe('2=Debug UART');
+
+    const dup = await req('POST', '/api/monitors/1/rename', { name: 'debug uart' });
+    expect(dup.status).toBe(400);
+  });
+
+  it('M3b: path refs are percent-decoded before name resolution', async () => {
+    // MCP 客户端总是 encodeURIComponent 监视器名："Debug UART" → "Debug%20UART"
+    const get = await req('GET', '/api/monitors/Debug%20UART/config');
+    expect(get.status).toBe(200);
+    expect(get.data.monitor).toBe('2=Debug UART');
+
+    const renamed = await req('POST', '/api/monitors/Debug%20UART/rename', { name: 'RTT' });
+    expect(renamed.status).toBe(200);
+    expect(renamed.data.label).toBe('2=RTT');
+  });
+
+  it('M4: config get/set updates display settings', async () => {
+    const set = await req('POST', '/api/monitors/2/config', { showTimestamp: true, rxIdleWrapMs: 50 });
+    expect(set.status).toBe(200);
+    expect(set.data.config.showTimestamp).toBe(true);
+
+    const get = await req('GET', '/api/monitors/2/config');
+    expect(get.data.config.rxIdleWrapMs).toBe(50);
+  });
+
+  it('M5: delete removes the monitor; last one cannot be deleted', async () => {
+    const del = await req('DELETE', '/api/monitors/2');
+    expect(del.status).toBe(200);
+
+    const last = await req('DELETE', '/api/monitors/1');
+    expect(last.status).toBe(409);
+    expect(last.data.error.code).toBe('MONITOR_MINIMUM');
   });
 });

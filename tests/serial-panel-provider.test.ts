@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('vscode', () => ({
   Uri: {
@@ -17,12 +17,21 @@ vi.mock('vscode', () => ({
     fs: {
       writeFile: vi.fn(),
     },
+    getConfiguration: () => ({
+      get: (_key: string, defaultValue: unknown) => defaultValue,
+    }),
+  },
+  env: {
+    clipboard: {
+      readText: vi.fn(async () => ''),
+    },
   },
 }));
 
 import { SerialPanelProvider } from '../packages/serialagent-plus/src/serial-panel-provider';
+import * as vscode from 'vscode';
 
-function createProvider() {
+function createProvider(hostOverrides: Record<string, unknown> = {}) {
   const context = {
     extensionUri: { path: '/extension-root' },
     globalState: {
@@ -32,12 +41,14 @@ function createProvider() {
   };
 
   // 最小 MonitorHost 桩：HTML 渲染不触串口，仅需 primary().manager.listPorts 形状
-  const managerStub = { listPorts: vi.fn(async () => []) };
+  const managerStub = { listPorts: vi.fn(async () => []), config: { showTimestamp: false } };
   const hostStub = {
     primary: () => ({ manager: managerStub }),
     list: () => [],
     runtime: () => undefined,
+    periodicState: () => ({ enabled: false, intervalMs: 1000 }),
     registry: {},
+    ...hostOverrides,
   };
 
   return new SerialPanelProvider(context as any, hostStub as any, vi.fn());
@@ -47,6 +58,50 @@ function createWebview() {
   return {
     cspSource: 'vscode-resource:',
     asWebviewUri: (uri: { path?: string }) => `webview:${uri.path ?? ''}`,
+  };
+}
+
+/** 可捕获 postMessage 与消息处理器的 webview 桩 */
+function createInteractiveWebview() {
+  const posted: Array<Record<string, any>> = [];
+  const handlers: Array<(message: any) => unknown> = [];
+  return {
+    posted,
+    handlers,
+    cspSource: 'vscode-resource:',
+    asWebviewUri: (uri: { path?: string }) => `webview:${uri.path ?? ''}`,
+    postMessage: (message: Record<string, any>) => {
+      posted.push(message);
+      return Promise.resolve(true);
+    },
+    onDidReceiveMessage: (handler: (message: any) => unknown) => {
+      handlers.push(handler);
+      return { dispose: vi.fn() };
+    },
+  };
+}
+
+/** 最小 WebviewPanel 桩（标题/可见性与消息） */
+function createPanelStub() {
+  const posted: Array<Record<string, any>> = [];
+  return {
+    posted,
+    title: '',
+    visible: true,
+    iconPath: undefined as unknown,
+    webview: {
+      cspSource: 'vscode-resource:',
+      asWebviewUri: (uri: { path?: string }) => `webview:${uri.path ?? ''}`,
+      postMessage: (message: Record<string, any>) => {
+        posted.push(message);
+        return Promise.resolve(true);
+      },
+      onDidReceiveMessage: () => ({ dispose: vi.fn() }),
+    },
+    onDidChangeViewState: () => ({ dispose: vi.fn() }),
+    onDidDispose: () => ({ dispose: vi.fn() }),
+    reveal: vi.fn(),
+    dispose: vi.fn(),
   };
 }
 
@@ -68,9 +123,13 @@ describe('SerialPanelProvider monitor layout', () => {
 
     expect(html).toContain('class="accordion-root"');
     expect(html).toContain('data-panel="monitor"');
-    expect(html).toContain('>Serial Monitor<');
+    expect(html).toContain('id="monitor-tabs"');
+    expect(html).toContain('id="monitor-name-title"');
+    expect(html).toContain('id="btn-add-monitor"');
+    expect(html).toContain('id="btn-monitor-expand"');
     expect(html).toContain('accordion-panel--monitor is-expanded');
-    expect(html).toContain('accordion-header--static');
+    expect(html).toContain('monitor-title-row');
+    expect(html).not.toContain('accordion-header');
     expect(html).not.toContain('data-panel="firmware"');
     expect(html).not.toContain('data-panel="connection"');
     expect(html).not.toContain('Firmware Program Config');
@@ -219,5 +278,281 @@ describe('SerialPanelProvider monitor layout', () => {
     expect(normalize({ activePanel: 'connection' })).toEqual({ normalSendHeight: undefined });
     expect(normalize({ normalSendHeight: 7 })).toEqual({ normalSendHeight: 7 });
     expect(normalize({})).toEqual({ normalSendHeight: undefined });
+  });
+});
+
+describe('SerialPanelProvider cross-view sync', () => {
+  const monitorInfo = {
+    id: 'm1',
+    index: 1,
+    name: 'Serial Monitor1',
+    connected: false,
+    port: '',
+    baudRate: 115200,
+    parity: 'none',
+  };
+
+  function createRuntime(overrides: Record<string, unknown> = {}) {
+    return {
+      meta: { id: 'm1', index: 1, name: 'Serial Monitor1', sendHistory: [] },
+      manager: { config: { showTimestamp: false }, updateSettings: vi.fn() },
+      session: { snapshot: () => ({ liveLine: 'msh > ls', buffer: '', caret: 0, deviceLine: null }) },
+      ...overrides,
+    };
+  }
+
+  it('replays buffered log lines and the terminal snapshot to a new view', async () => {
+    const runtime = createRuntime({ manager: { config: { showTimestamp: true } } });
+    const provider = createProvider({
+      runtime: (id: string) => (id === 'm1' ? runtime : undefined),
+    });
+    provider.handleHostEvent({
+      type: 'logLines',
+      monitorId: 'm1',
+      lines: ['boot ok'],
+      kind: 'text',
+    });
+
+    const webview = createInteractiveWebview();
+    (provider as any)._setupWebviewMessageHandler(webview);
+    await webview.handlers[0]({ type: 'requestMonitorSnapshot', monitorId: 'm1' });
+
+    const snapshot = webview.posted.find((message) => message.type === 'monitorSnapshot');
+    expect(snapshot).toBeDefined();
+    expect(snapshot!.monitorId).toBe('m1');
+    expect(snapshot!.entries).toHaveLength(1);
+    expect(snapshot!.entries[0].kind).toBe('text');
+    expect(snapshot!.entries[0].text).toMatch(/^\[\d{2}:\d{2}:\d{2}\.\d{3}\] boot ok$/);
+    expect(snapshot!.terminal).toEqual({ liveLine: 'msh > ls', buffer: '', caret: 0, deviceLine: null });
+  });
+
+  it('drops the replay buffer when a monitor log is cleared', async () => {
+    const runtime = createRuntime();
+    const provider = createProvider({
+      runtime: (id: string) => (id === 'm1' ? runtime : undefined),
+    });
+    provider.handleHostEvent({
+      type: 'logLines',
+      monitorId: 'm1',
+      lines: ['boot ok'],
+      kind: 'text',
+    });
+    provider.clearMonitorLog('m1');
+
+    const webview = createInteractiveWebview();
+    (provider as any)._setupWebviewMessageHandler(webview);
+    await webview.handlers[0]({ type: 'requestMonitorSnapshot', monitorId: 'm1' });
+
+    const snapshot = webview.posted.find((message) => message.type === 'monitorSnapshot');
+    expect(snapshot!.entries).toEqual([]);
+  });
+
+  it('sends the host periodic state when a view is initialized', () => {
+    const runtime = createRuntime();
+    const provider = createProvider({
+      list: () => [monitorInfo],
+      runtime: (id: string) => (id === 'm1' ? runtime : undefined),
+      periodicState: () => ({ enabled: true, intervalMs: 250 }),
+    });
+
+    const webview = createInteractiveWebview();
+    (provider as any)._initializeView(webview, 'm1');
+
+    expect(webview.posted).toContainEqual({
+      type: 'periodicState',
+      monitorId: 'm1',
+      enabled: true,
+      intervalMs: 250,
+    });
+  });
+
+  it('re-sends the initial state when the webview reports it is ready', async () => {    // 首次 postMessage 可能早于 webview 脚本注册监听而丢失（标签栏/快捷指令空白）
+    const runtime = createRuntime();
+    const provider = createProvider({
+      list: () => [monitorInfo],
+      runtime: (id: string) => (id === 'm1' ? runtime : undefined),
+    });
+
+    const webview = createInteractiveWebview();
+    (provider as any)._setupWebviewMessageHandler(webview, 'm1');
+    expect(webview.posted).toHaveLength(0);
+
+    await webview.handlers[0]({ type: 'ready' });
+
+    const restore = webview.posted.find((message) => message.type === 'restoreState');
+    expect(restore).toBeDefined();
+    expect(restore!.monitors[0].id).toBe('m1');
+    expect(webview.posted).toContainEqual({ type: 'activateMonitor', monitorId: 'm1' });
+    expect(webview.posted.some((message) => message.type === 'periodicState')).toBe(true);
+  });
+
+  it('keeps editor panel titles on the index=name format and refreshes them after a rename', () => {
+    const meta = { id: 'm1', index: 1, name: 'Serial Monitor1' };
+    const provider = createProvider({
+      list: () => [monitorInfo],
+      runtime: (id: string) => (id === 'm1' ? createRuntime() : undefined),
+      registry: { get: (id: string) => (id === 'm1' ? meta : undefined) },
+    });
+
+    const panel = createPanelStub();
+    (provider as any).resolveWebviewPanel(panel, 'm1');
+    expect(panel.title).toBe('1=Serial Monitor1');
+
+    // 任一视口重命名成功 → metas 广播 → 所有视口重渲染，编辑器面板标题同步
+    meta.name = 'UART A';
+    provider.handleHostEvent({
+      type: 'metas',
+      monitors: [{
+        id: 'm1',
+        index: 1,
+        name: 'UART A',
+        connected: false,
+        port: '',
+        baudRate: 115200,
+        parity: 'none',
+      }],
+    });
+
+    expect(panel.title).toBe('1=UART A');
+    const changed = panel.posted.find((message) => message.type === 'monitorsChanged');
+    expect(changed!.monitors[0]).toMatchObject({ id: 'm1', index: 1, name: 'UART A' });
+  });
+
+  it('pastes the host clipboard into the terminal session on Ctrl+V', async () => {
+    const handleKey = vi.fn();
+    const runtime = createRuntime({ session: { snapshot: vi.fn(), handleKey } });
+    const provider = createProvider({
+      runtime: (id: string) => (id === 'm1' ? runtime : undefined),
+    });
+    vi.mocked(vscode.env.clipboard.readText).mockResolvedValue('list_device\n');
+
+    const webview = createInteractiveWebview();
+    (provider as any)._setupWebviewMessageHandler(webview);
+    await webview.handlers[0]({ type: 'pasteToTerminal', monitorId: 'm1' });
+
+    expect(handleKey).toHaveBeenCalledWith({ type: 'paste', text: 'list_device\n' });
+  });
+});
+
+describe('SerialPanelProvider log export', () => {
+  function createExportProvider(monitorName: string) {
+    const runtime = {
+      meta: { id: 'm1', index: 1, name: monitorName, sendHistory: [] },
+      manager: {
+        config: {
+          port: 'COM3',
+          baudRate: 115200,
+          dataBits: 8,
+          parity: 'none',
+          stopBits: 1,
+          flowControl: 'none',
+          encoding: 'utf8',
+          showTimestamp: false,
+          hexMode: false,
+          lineEnding: 'none',
+          rxIdleWrapMs: 20,
+          logBufferKB: 1024,
+        },
+        isConnected: true,
+        currentPath: 'COM7',
+        currentBaudRate: 921600,
+        rxBytes: 2048,
+        txBytes: 12,
+        updateSettings: vi.fn(),
+      },
+      session: { snapshot: () => ({ liveLine: '', buffer: '', caret: 0, deviceLine: null }) },
+    };
+    const provider = createProvider({
+      runtime: (id: string) => (id === 'm1' ? runtime : undefined),
+      registry: {
+        get: (id: string) => (id === 'm1'
+          ? { id: 'm1', index: 1, name: monitorName, config: runtime.manager.config }
+          : undefined),
+      },
+    });
+    return provider;
+  }
+
+  beforeEach(() => {
+    vi.mocked(vscode.window.showSaveDialog).mockReset();
+    vi.mocked(vscode.workspace.fs.writeFile).mockReset();
+  });
+
+  it('defaults the file name to serial-agent-plus-<monitor>-<timestamp>.log', async () => {
+    const provider = createExportProvider('UART A/B');
+    vi.mocked(vscode.window.showSaveDialog).mockResolvedValue({ fsPath: '/tmp/out.log' } as any);
+
+    await (provider as any)._saveLogToFile('m1', []);
+
+    const options = vi.mocked(vscode.window.showSaveDialog).mock.calls[0][0]!;
+    const defaultPath = String((options.defaultUri as { path?: string }).path);
+    expect(defaultPath).toMatch(/serial-agent-plus-UART-A-B-\d{14}\.log$/);
+  });
+
+  it('writes the serial port header before the log data', async () => {
+    const provider = createExportProvider('Serial Monitor1');
+    vi.mocked(vscode.window.showSaveDialog).mockResolvedValue({ fsPath: '/tmp/out.log' } as any);
+
+    await (provider as any)._saveLogToFile('m1', ['[1] boot', '[2] ok']);
+
+    const written = vi.mocked(vscode.workspace.fs.writeFile).mock.calls[0][1] as Buffer;
+    const text = written.toString('utf8');
+    const headerEnd = text.indexOf('# ===== log data =====');
+    expect(headerEnd).toBeGreaterThan(-1);
+
+    const header = text.slice(0, headerEnd);
+    expect(header).toContain('# ===== Serial Agent Plus log =====');
+    expect(header).toMatch(/^# Monitor\s+: 1=Serial Monitor1$/m);
+    expect(header).toMatch(/^# Connection\s+: Connected$/m);
+    expect(header).toMatch(/^# Port\s+: COM7$/m);
+    expect(header).toMatch(/^# Baud Rate\s+: 921600$/m);
+    expect(header).toMatch(/^# Frame\s+: 8-none-1$/m);
+    expect(header).toMatch(/^# Encoding\s+: UTF-8$/m);
+    expect(header).toMatch(/^# RX \/ TX\s+: 2\.0 KB \/ 12 B$/m);
+    expect(header).toMatch(/^# Log Lines\s+: 2$/m);
+
+    expect(text.slice(headerEnd)).toContain('[1] boot\n[2] ok');
+  });
+
+  it('reports the configured port and Disconnected state when the monitor is offline', async () => {
+    const runtime = {
+      meta: { id: 'm1', index: 1, name: 'Serial Monitor1', sendHistory: [] },
+      manager: {
+        config: {
+          port: 'COM3',
+          baudRate: 115200,
+          dataBits: 8,
+          parity: 'none',
+          stopBits: 1,
+          flowControl: 'none',
+          encoding: 'gbk',
+          showTimestamp: false,
+          hexMode: false,
+          lineEnding: 'none',
+          rxIdleWrapMs: 20,
+          logBufferKB: 1024,
+        },
+        isConnected: false,
+        currentPath: '',
+        currentBaudRate: 0,
+        rxBytes: 0,
+        txBytes: 0,
+        updateSettings: vi.fn(),
+      },
+      session: { snapshot: () => ({ liveLine: '', buffer: '', caret: 0, deviceLine: null }) },
+    };
+    const provider = createProvider({
+      runtime: (id: string) => (id === 'm1' ? runtime : undefined),
+      registry: { get: () => ({ id: 'm1', index: 1, name: 'Serial Monitor1', config: runtime.manager.config }) },
+    });
+    vi.mocked(vscode.window.showSaveDialog).mockResolvedValue({ fsPath: '/tmp/out.log' } as any);
+
+    await (provider as any)._saveLogToFile('m1', []);
+
+    const text = (vi.mocked(vscode.workspace.fs.writeFile).mock.calls[0][1] as Buffer).toString('utf8');
+    expect(text).toMatch(/^# Connection\s+: Disconnected$/m);
+    expect(text).toMatch(/^# Port\s+: COM3$/m);
+    expect(text).toMatch(/^# Baud Rate\s+: 115200$/m);
+    expect(text).toMatch(/^# Encoding\s+: GBK$/m);
   });
 });

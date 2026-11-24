@@ -29,20 +29,26 @@ function parseSchema(shape: Record<string, unknown>) {
 }
 
 describe('MCP tools registration and bridge mapping', () => {
-  it('should register all 9 tools', () => {
+  it('should register all 15 tools (9 core + 6 monitor management)', () => {
     const server = new FakeMcpServer();
     registerTools(server as any, vi.fn() as any);
-    expect(server.tools.size).toBe(9);
+    expect(server.tools.size).toBe(15);
 
     expect([...server.tools.keys()].sort()).toEqual([
       'clear_serial_log',
       'connect_serial',
+      'create_monitor',
+      'delete_monitor',
       'disconnect_serial',
+      'get_monitor_config',
       'get_serial_status',
+      'list_monitors',
       'list_serial_ports',
       'read_serial_log',
+      'rename_monitor',
       'send_and_wait',
       'send_serial_data',
+      'update_monitor_config',
       'wait_for_output',
     ]);
   });
@@ -80,10 +86,55 @@ describe('MCP tools registration and bridge mapping', () => {
     expect(requester).toHaveBeenCalledWith('GET', '/api/status');
     expect(requester).toHaveBeenCalledWith('GET', '/api/ports');
     expect(requester).toHaveBeenCalledWith('POST', '/api/connect', { port: 'COM7', baudRate: 9600, dataBits: 8, stopBits: 1, parity: 'none' });
-    expect(requester).toHaveBeenCalledWith('POST', '/api/disconnect');
+    expect(requester).toHaveBeenCalledWith('POST', '/api/disconnect', {});
     expect(requester).toHaveBeenCalledWith('GET', '/api/log?lines=20');
     expect(requester).toHaveBeenCalledWith('POST', '/api/send', { data: 'AT', hexMode: false });
-    expect(requester).toHaveBeenCalledWith('POST', '/api/clear');
+    expect(requester).toHaveBeenCalledWith('POST', '/api/clear', {});
+  });
+
+  it('should route monitor-scoped tools by index or name', async () => {
+    const requester = vi.fn(async () => ({ content: [{ type: 'text', text: '{}' }] }));
+    const server = new FakeMcpServer();
+    registerTools(server as any, requester as any);
+
+    await getTool(server, 'get_serial_status').handler({ monitor: '2' });
+    await getTool(server, 'read_serial_log').handler({ lines: 10, monitor: 'RTT' });
+    await getTool(server, 'send_serial_data').handler({ data: 'AT', hexMode: false, monitor: '2' });
+    await getTool(server, 'disconnect_serial').handler({ monitor: 'RTT' });
+    await getTool(server, 'wait_for_output').handler({ pattern: 'OK', timeout: 5, scanBuffer: false, monitor: '3' });
+
+    expect(requester).toHaveBeenCalledWith('GET', '/api/status?monitor=2');
+    expect(requester).toHaveBeenCalledWith('GET', '/api/log?lines=10&monitor=RTT');
+    expect(requester).toHaveBeenCalledWith('POST', '/api/send', { data: 'AT', hexMode: false, monitor: '2' });
+    expect(requester).toHaveBeenCalledWith('POST', '/api/disconnect', { monitor: 'RTT' });
+    expect(requester).toHaveBeenCalledWith(
+      'GET',
+      '/api/log/wait?pattern=OK&timeout=5&scanBuffer=false&monitor=3',
+      undefined,
+      10000,
+    );
+  });
+
+  it('should map monitor management tools to management endpoints', async () => {
+    const requester = vi.fn(async () => ({ content: [{ type: 'text', text: '{}' }] }));
+    const server = new FakeMcpServer();
+    registerTools(server as any, requester as any);
+
+    await getTool(server, 'list_monitors').handler({});
+    await getTool(server, 'create_monitor').handler({ name: 'RTT' });
+    await getTool(server, 'create_monitor').handler({});
+    await getTool(server, 'delete_monitor').handler({ monitor: '2' });
+    await getTool(server, 'rename_monitor').handler({ monitor: 'RTT', name: 'Debug UART' });
+    await getTool(server, 'get_monitor_config').handler({ monitor: '1' });
+    await getTool(server, 'update_monitor_config').handler({ monitor: '1', showTimestamp: true, rxIdleWrapMs: 50 });
+
+    expect(requester).toHaveBeenCalledWith('GET', '/api/monitors');
+    expect(requester).toHaveBeenCalledWith('POST', '/api/monitors', { name: 'RTT' });
+    expect(requester).toHaveBeenCalledWith('POST', '/api/monitors', {});
+    expect(requester).toHaveBeenCalledWith('DELETE', '/api/monitors/2');
+    expect(requester).toHaveBeenCalledWith('POST', '/api/monitors/RTT/rename', { name: 'Debug UART' });
+    expect(requester).toHaveBeenCalledWith('GET', '/api/monitors/1/config');
+    expect(requester).toHaveBeenCalledWith('POST', '/api/monitors/1/config', { showTimestamp: true, rxIdleWrapMs: 50 });
   });
 
   it('wait_for_output should encode query and set timeoutMs', async () => {
