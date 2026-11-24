@@ -53,12 +53,21 @@ export class BridgeServer {
   /** 是否启用 Token 认证（默认关闭，仅本地使用无需认证） */
   private _authEnabled: boolean;
   private _version: string;
+  /** 服务发现文件目录（默认 ~/.serialagent-plus；测试传入临时目录避免覆盖真实实例） */
+  private readonly _bridgeDir: string;
 
-  constructor(host: BridgeHost, logger: ILogger, authEnabled = true, version = '0.0.0') {
+  constructor(
+    host: BridgeHost,
+    logger: ILogger,
+    authEnabled = true,
+    version = '0.0.0',
+    bridgeDir?: string,
+  ) {
     this._host = host;
     this._logger = logger;
     this._authEnabled = authEnabled;
     this._version = version;
+    this._bridgeDir = bridgeDir ?? path.join(os.homedir(), '.serialagent-plus');
   }
 
   /** 设置 UI 同步回调：Bridge API 清空日志时通知 Webview（携带监视器 id） */
@@ -119,7 +128,7 @@ export class BridgeServer {
   // ---- 服务发现文件 (S1.02) ----
 
   private _getBridgeFilePath(): string {
-    return path.join(os.homedir(), '.serialagent-plus', 'bridge.json');
+    return path.join(this._bridgeDir, 'bridge.json');
   }
 
   private _writeBridgeFile(): void {
@@ -145,10 +154,20 @@ export class BridgeServer {
   private _deleteBridgeFile(): void {
     try {
       const filePath = this._getBridgeFilePath();
-      if (fs.existsSync(filePath)) {
-        fs.unlinkSync(filePath);
-        this._logger.appendLine('[Serial Agent Plus Bridge] Discovery file deleted');
+      if (!fs.existsSync(filePath)) { return; }
+      // 只删除本实例写出的发现文件：另一实例（如多窗口/测试）覆盖后不能误删
+      let owner: { instanceId?: unknown; pid?: unknown } = {};
+      try {
+        owner = JSON.parse(fs.readFileSync(filePath, 'utf8')) as typeof owner;
+      } catch {
+        return; // 内容不可解析：保留，避免误删他人文件
       }
+      const isOwn = typeof owner.instanceId === 'string'
+        ? owner.instanceId === this._instanceId
+        : owner.pid === process.pid;
+      if (!isOwn) { return; }
+      fs.unlinkSync(filePath);
+      this._logger.appendLine('[Serial Agent Plus Bridge] Discovery file deleted');
     } catch { /* ignore */ }
   }
 

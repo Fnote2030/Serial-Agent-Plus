@@ -9,10 +9,22 @@
  */
 
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
+import * as fs from 'fs';
 import * as http from 'http';
+import * as os from 'os';
+import * as path from 'path';
 import { BridgeServer } from '../packages/serialagent-plus/src/bridge-server';
 import { MockSerialManager } from './mocks/mock-serial-manager';
 import { ILogger } from '../packages/serialagent-plus/src/types';
+
+/**
+ * 测试专用发现文件目录：BridgeServer.start() 会写服务发现文件，
+ * 默认路径是用户真实运行时使用的 ~/.serialagent-plus，测试必须隔离，
+ * 否则会覆盖/删除正在运行的扩展实例的 bridge.json。
+ */
+function createTempBridgeDir(): string {
+  return fs.mkdtempSync(path.join(os.tmpdir(), 'serialagent-bridge-test-'));
+}
 
 // ---- 测试工具 ----
 
@@ -144,7 +156,7 @@ describe('Bridge Server API', () => {
   beforeAll(async () => {
     mock = new MockSerialManager();
     logger = new SilentLogger();
-    bridge = new BridgeServer(new SingleMonitorHost(mock) as never, logger);
+    bridge = new BridgeServer(new SingleMonitorHost(mock) as never, logger, true, '0.0.0', createTempBridgeDir());
     await bridge.start();
     port = bridge.port;
     token = bridge.token;
@@ -731,7 +743,7 @@ describe('Bridge Server multi-monitor management (P3)', () => {
 
   beforeAll(async () => {
     host = new FakeHost(new MockSerialManager());
-    bridge2 = new BridgeServer(host as never, new SilentLogger());
+    bridge2 = new BridgeServer(host as never, new SilentLogger(), true, '0.0.0', createTempBridgeDir());
     await bridge2.start();
     port2 = bridge2.port;
     token2 = bridge2.token;
@@ -810,5 +822,45 @@ describe('Bridge Server multi-monitor management (P3)', () => {
     const last = await req('DELETE', '/api/monitors/1');
     expect(last.status).toBe(409);
     expect(last.data.error.code).toBe('MONITOR_MINIMUM');
+  });
+});
+
+describe('Bridge discovery file isolation', () => {
+  it('writes the discovery file into the configured directory', async () => {
+    const dir = createTempBridgeDir();
+    const bridge = new BridgeServer(new SingleMonitorHost(new MockSerialManager()) as never, new SilentLogger(), true, '0.0.0', dir);
+    await bridge.start();
+    try {
+      const filePath = path.join(dir, 'bridge.json');
+      expect(fs.existsSync(filePath)).toBe(true);
+      const written = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+      expect(written.port).toBe(bridge.port);
+      expect(written.instanceId).toBeTruthy();
+    } finally {
+      await bridge.stop();
+    }
+  });
+
+  it('does not delete a discovery file overwritten by another instance', async () => {
+    const dir = createTempBridgeDir();
+    const filePath = path.join(dir, 'bridge.json');
+    const bridge = new BridgeServer(new SingleMonitorHost(new MockSerialManager()) as never, new SilentLogger(), true, '0.0.0', dir);
+    await bridge.start();
+
+    // 另一实例（多窗口/真实扩展）覆盖了发现文件：本实例停止时不能删除
+    fs.writeFileSync(filePath, JSON.stringify({ instanceId: 'other-instance', pid: 4242, port: 1, token: 'x' }));
+    await bridge.stop();
+    expect(fs.existsSync(filePath)).toBe(true);
+  });
+
+  it('removes its own discovery file on stop', async () => {
+    const dir = createTempBridgeDir();
+    const filePath = path.join(dir, 'bridge.json');
+    const bridge = new BridgeServer(new SingleMonitorHost(new MockSerialManager()) as never, new SilentLogger(), true, '0.0.0', dir);
+    await bridge.start();
+    expect(fs.existsSync(filePath)).toBe(true);
+
+    await bridge.stop();
+    expect(fs.existsSync(filePath)).toBe(false);
   });
 });

@@ -130,10 +130,6 @@ If you install the extension from Visual Studio Marketplace, just search for `Se
 
 This path is the easiest option for regular users.
 
-<p align="left">
-  <img src="./image/README/marketplace-install.png" alt="Marketplace install" width="420" />
-</p>
-
 ### Option 2: Install a VSIX
 
 If you have a `.vsix` file from the Release page, you can install it directly in VS Code.

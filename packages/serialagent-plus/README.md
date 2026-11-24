@@ -129,9 +129,6 @@ AI IDE / Agent Client
 
 这条路径适合普通使用者，也是最省事的安装方式。
 
-<p align="left">
-  <img src="./image/README/marketplace-install.png" alt="Marketplace install" width="420" />
-</p>
 
 ### 方式 2：安装 VSIX
 

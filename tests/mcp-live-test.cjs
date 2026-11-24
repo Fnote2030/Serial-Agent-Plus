@@ -17,6 +17,8 @@ const requests = [
 const seen = [];
 let buffer = '';
 const timeout = setTimeout(() => { console.log('TIMEOUT waiting for responses'); child.kill(); process.exit(1); }, 15000);
+/** 还差哪些响应未到（响应可能乱序返回，全部收齐才退出） */
+const pending = new Set(requests.filter((r) => r.id !== undefined).map((r) => r.id));
 
 child.stdout.on('data', (chunk) => {
   buffer += chunk.toString();
@@ -42,9 +44,14 @@ child.stdout.on('data', (chunk) => {
       } else if (resp.id === 5) {
         const parsed = JSON.parse(resp.result.content[0].text);
         console.log(`read_serial_log(monitor=1) OK -> total=${parsed.totalBuffered}`);
-        clearTimeout(timeout);
-        child.kill();
-        process.exit(0);
+      }
+      if (resp.id !== undefined) {
+        pending.delete(resp.id);
+        if (pending.size === 0) {
+          clearTimeout(timeout);
+          child.kill();
+          process.exit(0);
+        }
       }
     } catch { /* ignore non-JSON */ }
   }
