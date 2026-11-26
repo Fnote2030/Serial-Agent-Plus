@@ -13,7 +13,7 @@ export interface PortAutoRefreshConfig {
 }
 
 export function readPortAutoRefreshConfig(): PortAutoRefreshConfig {
-  const config = vscode.workspace.getConfiguration('serialagent');
+  const config = vscode.workspace.getConfiguration('serialagent-plus');
   return {
     enabled: config.get<boolean>('portAutoRefresh', true),
     intervalMs: Math.min(

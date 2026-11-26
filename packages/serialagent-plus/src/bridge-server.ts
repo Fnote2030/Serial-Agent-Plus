@@ -196,7 +196,7 @@ export class BridgeServer {
       res.setHeader('Access-Control-Allow-Origin', allowedOrigin);
       res.setHeader('Vary', 'Origin');
     }
-    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, DELETE, OPTIONS');
     res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
 
     if (req.method === 'OPTIONS') {
@@ -210,6 +210,9 @@ export class BridgeServer {
     const url = new URL(req.url ?? '/', `http://127.0.0.1:${this._port}`);
     const pathname = url.pathname;
     const method = req.method ?? 'GET';
+    // 失败请求的错误码要能在 Output 面板（Serial Agent Plus Bridge）里看到，
+    // 便于排查浏览器/脚本调用失败（错误码本身不进 HTTP 响应以外的通道）
+    (res as unknown as { __bridgeRequestLabel?: string }).__bridgeRequestLabel = `${method} ${pathname}`;
 
     try {
       // 多监视器管理路由：/api/monitors[/{ref}[/rename|/config]]
@@ -320,6 +323,10 @@ export class BridgeServer {
         details,
       };
     }
+    const label = (res as unknown as { __bridgeRequestLabel?: string }).__bridgeRequestLabel;
+    this._logger.appendLine(
+      `[Serial Agent Plus Bridge] ${status} ${code}${label ? ` (${label})` : ''}: ${message}`,
+    );
     this._json(res, status, payload);
   }
 
@@ -678,7 +685,7 @@ export class BridgeServer {
       const suffixes: Record<string, string> = { lf: '\n', crlf: '\r\n', cr: '\r', none: '' };
       bytesSent = encodeSerialText(data + (suffixes[lineEnding] ?? '\n'), rt.manager.config.encoding).length;
     }
-    rt.manager.injectTxLog(data);
+    rt.manager.injectTxLog(data, hexMode);
     return { ok: true, bytesSent };
   }
 

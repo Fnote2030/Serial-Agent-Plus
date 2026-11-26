@@ -14,6 +14,11 @@
 
 // 共享类型从 packages/serialagent-plus/src/types.ts 导入
 import { PortInfo, SerialConfig, DEFAULT_CONFIG, ISerialManager } from '../../packages/serialagent-plus/src/types';
+// 与真实实现共用同一个 HEX 回显格式化
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const { normalizeHexInput } = require('../../packages/serialagent-plus/media/hex-format.js') as {
+  normalizeHexInput: (text: string) => string;
+};
 
 // 重新导出以保持向后兼容（已有测试文件可能从此处导入）
 export { PortInfo, SerialConfig, DEFAULT_CONFIG, ISerialManager };
@@ -234,14 +239,15 @@ export class MockSerialManager implements ISerialManager {
     for (const cb of this._newLogSubscribers) { cb(line); }
   }
 
-  /** 注入 TX 回显日志（与真实 SerialManager 行为一致：showTimestamp 开启时为每行添加时间戳前缀） */
-  injectTxLog(data: string): void {
+  /** 注入 TX 回显日志（与真实 SerialManager 行为一致：时间戳在行首，HEX 发送用 MCP TX HEX>>） */
+  injectTxLog(data: string, hexMode = false): void {
     const now = new Date();
     const prefix = this._config.showTimestamp
       ? `[${now.toTimeString().split(' ')[0]}.${String(now.getMilliseconds()).padStart(3, '0')}] `
       : '';
-    const body = String(data).split('\n').map((line) => `${prefix}MCP TX>> ${line}`).join('\n');
-    this.injectLog(body);
+    const label = hexMode ? 'MCP TX HEX>>' : 'MCP TX>>';
+    const body = hexMode ? normalizeHexInput(String(data)) : String(data);
+    this.injectLog(body.split('\n').map((line) => `${prefix}${label} ${line}`).join('\n'));
   }
 
   /** 订阅新日志行 */

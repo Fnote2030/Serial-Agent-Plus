@@ -1,42 +1,57 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi, afterEach } from 'vitest';
 
-vi.mock('vscode', () => ({
-  Uri: {
-    joinPath: (...parts: Array<{ path?: string } | string>) => ({
-      path: parts.map((part) => typeof part === 'string' ? part : (part.path ?? '')).join('/'),
-    }),
-    file: (path: string) => ({ fsPath: path, path }),
-  },
-  window: {
-    showSaveDialog: vi.fn(),
-    showInformationMessage: vi.fn(),
-    showErrorMessage: vi.fn(),
-    showWarningMessage: vi.fn(),
-  },
-  workspace: {
-    fs: {
-      writeFile: vi.fn(),
+vi.mock('vscode', () => {
+  // 测试可写的配置存储：(vscode as any).__configStore.autoConnectOnStartup = true
+  const configStore: Record<string, unknown> = {};
+  return {
+    __configStore: configStore,
+    Uri: {
+      joinPath: (...parts: Array<{ path?: string } | string>) => ({
+        path: parts.map((part) => typeof part === 'string' ? part : (part.path ?? '')).join('/'),
+      }),
+      file: (path: string) => ({ fsPath: path, path }),
     },
-    getConfiguration: () => ({
-      get: (_key: string, defaultValue: unknown) => defaultValue,
-    }),
-  },
-  env: {
-    clipboard: {
-      readText: vi.fn(async () => ''),
+    ViewColumn: { Active: -1, Beside: -2, One: 1, Two: 2 },
+    window: {
+      showSaveDialog: vi.fn(),
+      showInformationMessage: vi.fn(),
+      showErrorMessage: vi.fn(),
+      showWarningMessage: vi.fn(),
     },
-  },
-}));
+    workspace: {
+      fs: {
+        writeFile: vi.fn(),
+      },
+      getConfiguration: () => ({
+        get: (key: string, defaultValue: unknown) => (
+          key in configStore ? configStore[key] : defaultValue
+        ),
+      }),
+    },
+    env: {
+      clipboard: {
+        readText: vi.fn(async () => ''),
+      },
+    },
+  };
+});
 
 import { SerialPanelProvider } from '../packages/serialagent-plus/src/serial-panel-provider';
 import * as vscode from 'vscode';
 
-function createProvider(hostOverrides: Record<string, unknown> = {}) {
+function createProvider(hostOverrides: Record<string, unknown> = {}, stateOverrides: Record<string, unknown> = {}) {
+  const workspaceData = new Map<string, unknown>(Object.entries(stateOverrides));
   const context = {
     extensionUri: { path: '/extension-root' },
     globalState: {
       get: vi.fn((_key: string, defaultValue: unknown) => defaultValue),
       update: vi.fn(),
+    },
+    workspaceState: {
+      get: vi.fn((key: string, defaultValue: unknown) => (
+        workspaceData.has(key) ? workspaceData.get(key) : defaultValue
+      )),
+      update: vi.fn((key: string, value: unknown) => { workspaceData.set(key, value); }),
     },
   };
 
@@ -295,8 +310,17 @@ describe('SerialPanelProvider cross-view sync', () => {
   function createRuntime(overrides: Record<string, unknown> = {}) {
     return {
       meta: { id: 'm1', index: 1, name: 'Serial Monitor1', sendHistory: [] },
-      manager: { config: { showTimestamp: false }, updateSettings: vi.fn() },
-      session: { snapshot: () => ({ liveLine: 'msh > ls', buffer: '', caret: 0, deviceLine: null }) },
+      manager: {
+        config: { showTimestamp: false },
+        updateSettings: vi.fn(),
+        clearLog: vi.fn(),
+        resetCounters: vi.fn(),
+      },
+      session: {
+        snapshot: () => ({ liveLine: 'msh > ls', buffer: '', caret: 0, deviceLine: null }),
+        resetEditing: vi.fn(),
+        clearLive: vi.fn(),
+      },
       ...overrides,
     };
   }
@@ -431,6 +455,227 @@ describe('SerialPanelProvider cross-view sync', () => {
     await webview.handlers[0]({ type: 'pasteToTerminal', monitorId: 'm1' });
 
     expect(handleKey).toHaveBeenCalledWith({ type: 'paste', text: 'list_device\n' });
+  });
+
+  it('clears the un-terminated RX live line when the log is cleared', () => {
+    const clearLive = vi.fn();
+    const resetEditing = vi.fn();
+    const clearLog = vi.fn();
+    const resetCounters = vi.fn();
+    const runtime = createRuntime({
+      manager: { config: { showTimestamp: false }, updateSettings: vi.fn(), clearLog, resetCounters },
+      session: { snapshot: vi.fn(), clearLive, resetEditing },
+    });
+    const provider = createProvider({
+      runtime: (id: string) => (id === 'm1' ? runtime : undefined),
+    });
+
+    provider.clearMonitorLog('m1');
+
+    // 文本模式收到的 HEX 数据没有换行，停留在终端实时行，清屏必须一并清掉
+    expect(clearLog).toHaveBeenCalled();
+    expect(resetCounters).toHaveBeenCalled();
+    expect(resetEditing).toHaveBeenCalled();
+    expect(clearLive).toHaveBeenCalled();
+  });
+
+  it('restores editor panels that were open before the reload', () => {
+    const runtime = createRuntime();
+    const created: Array<{ viewType: string; title: string; showOptions: unknown }> = [];
+    const originalCreate = (vscode.window as any).createWebviewPanel;
+    (vscode.window as any).createWebviewPanel = vi.fn((viewType: string, title: string, showOptions: unknown) => {
+      created.push({ viewType, title, showOptions });
+      const panel = createPanelStub();
+      panel.webview.onDidReceiveMessage = () => ({ dispose: vi.fn() });
+      return panel;
+    });
+    (vscode.window as any).tabGroups = { all: [{}, {}] };
+
+    try {
+      const provider = createProvider(
+        {
+          list: () => [monitorInfo],
+          runtime: (id: string) => (id === 'm1' ? runtime : undefined),
+          registry: { get: (id: string) => (id === 'm1' ? { id: 'm1', index: 1, name: 'Serial Monitor1' } : undefined) },
+        },
+        { openEditorMonitors: [{ id: 'm1', viewColumn: 2 }, { id: 'gone', viewColumn: 1 }] },
+      );
+
+      (provider as any).restoreEditorPanels();
+
+      expect(created).toHaveLength(1);
+      expect(created[0].title).toBe('1=Serial Monitor1');
+      expect(created[0].showOptions).toMatchObject({ viewColumn: 2, preserveFocus: true });
+    } finally {
+      (vscode.window as any).createWebviewPanel = originalCreate;
+      delete (vscode.window as any).tabGroups;
+    }
+  });
+});
+
+describe('SerialPanelProvider saved serial config restore', () => {
+  const configStore = (vscode as any).__configStore as Record<string, unknown>;
+
+  afterEach(() => {
+    for (const key of Object.keys(configStore)) { delete configStore[key]; }
+  });
+
+  function createRestoreProvider(options: {
+    ports: Array<{ path: string }>;
+    monitors: Array<{ info: Record<string, unknown>; runtime: Record<string, any> }>;
+    config?: Record<string, unknown>;
+  }) {
+    const updateMonitorConfig = vi.fn();
+    const connect = vi.fn(async () => ({ ok: true }));
+    Object.assign(configStore, options.config ?? {});
+    const provider = createProvider({
+      primary: () => ({ manager: { listPorts: vi.fn(async () => options.ports) } }),
+      list: () => options.monitors.map((item) => item.info),
+      runtime: (id: string) => options.monitors.find((item) => item.info.id === id)?.runtime,
+      updateMonitorConfig,
+      connect,
+      registry: {},
+    });
+    return { provider, updateMonitorConfig, connect };
+  }
+
+  function makeMonitor(id: string, savedPort: string, connected = false) {
+    return {
+      info: {
+        id, index: Number(id.slice(1)), name: `Serial Monitor${id.slice(1)}`,
+        connected, port: savedPort, baudRate: 115200, parity: 'none',
+      },
+      runtime: {
+        meta: { id, index: Number(id.slice(1)), name: `Serial Monitor${id.slice(1)}`, sendHistory: [] },
+        manager: {
+          config: { port: savedPort, baudRate: 115200, lineEnding: 'none', showTimestamp: false, hexMode: false, encoding: 'utf8', rxIdleWrapMs: 20, logBufferKB: 1024 },
+          isConnected: connected,
+          injectLog: vi.fn(),
+          updateSettings: vi.fn(),
+        },
+        session: { snapshot: vi.fn(), resetEditing: vi.fn(), clearLive: vi.fn() },
+      },
+    };
+  }
+
+  it('clears a saved port whose device is gone and keeps an available one', async () => {
+    const alive = makeMonitor('m1', 'COM5');
+    const gone = makeMonitor('m2', 'COM9');
+    const { provider, updateMonitorConfig } = createRestoreProvider({
+      ports: [{ path: 'COM5' }, { path: 'COM3' }],
+      monitors: [alive, gone],
+    });
+
+    await provider.validateSavedPorts();
+
+    // 只清端口，波特率等偏好保留（换设备通常仍然适用）
+    expect(updateMonitorConfig).toHaveBeenCalledTimes(1);
+    expect(updateMonitorConfig).toHaveBeenCalledWith('m2', { port: '' });
+    expect(gone.runtime.manager.injectLog).toHaveBeenCalledWith(
+      expect.stringContaining('COM9 is no longer available'),
+    );
+    expect(alive.runtime.manager.injectLog).not.toHaveBeenCalled();
+  });
+
+  it('does not touch a connected monitor even if its port is missing from the list', async () => {
+    const connected = makeMonitor('m1', 'COM7', true);
+    const { provider, updateMonitorConfig } = createRestoreProvider({
+      ports: [{ path: 'COM3' }],
+      monitors: [connected],
+    });
+
+    await provider.validateSavedPorts();
+
+    expect(updateMonitorConfig).not.toHaveBeenCalled();
+  });
+
+  it('keeps saved configs when the port scan fails (no false reset)', async () => {
+    const monitor = makeMonitor('m1', 'COM9');
+    const { provider, updateMonitorConfig } = createRestoreProvider({
+      ports: [],
+      monitors: [monitor],
+    });
+    // 扫描失败用 rejected Promise 模拟
+    (provider as any)._listAvailablePorts = async () => null;
+
+    await provider.validateSavedPorts();
+
+    expect(updateMonitorConfig).not.toHaveBeenCalled();
+  });
+
+  it('validates saved ports only once per session (mid-session unplug keeps the config)', async () => {
+    const monitor = makeMonitor('m1', 'COM9');
+    const { provider, updateMonitorConfig } = createRestoreProvider({
+      ports: [{ path: 'COM5' }],
+      monitors: [monitor],
+    });
+
+    await provider.validateSavedPorts();
+    await provider.validateSavedPorts();
+
+    expect(updateMonitorConfig).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not auto-connect when the setting is off (default)', async () => {
+    const monitor = makeMonitor('m1', 'COM5');
+    const { provider, connect } = createRestoreProvider({
+      ports: [{ path: 'COM5' }],
+      monitors: [monitor],
+    });
+
+    await provider.autoConnectOnStartup();
+
+    expect(connect).not.toHaveBeenCalled();
+  });
+
+  it('auto-connects only monitors whose saved port still exists when enabled', async () => {
+    const alive = makeMonitor('m1', 'COM5');
+    const gone = makeMonitor('m2', 'COM9');
+    const { provider, connect } = createRestoreProvider({
+      ports: [{ path: 'COM5' }],
+      monitors: [alive, gone],
+      config: { autoConnectOnStartup: true },
+    });
+
+    await provider.autoConnectOnStartup();
+
+    expect(connect).toHaveBeenCalledTimes(1);
+    expect(connect.mock.calls[0][0]).toBe('m1');
+    expect((connect.mock.calls[0][1] as { port: string }).port).toBe('COM5');
+  });
+
+  it('skips monitors that are already connected', async () => {
+    const connected = makeMonitor('m1', 'COM5', true);
+    const { provider, connect } = createRestoreProvider({
+      ports: [{ path: 'COM5' }],
+      monitors: [connected],
+      config: { autoConnectOnStartup: true },
+    });
+
+    await provider.autoConnectOnStartup();
+
+    expect(connect).not.toHaveBeenCalled();
+  });
+
+  it('scans the port list only once when validating and auto-connecting at startup', async () => {
+    const monitor = makeMonitor('m1', 'COM5');
+    const listPorts = vi.fn(async () => [{ path: 'COM5' }]);
+    Object.assign(configStore, { autoConnectOnStartup: true });
+    const connect = vi.fn(async () => ({ ok: true }));
+    const provider = createProvider({
+      primary: () => ({ manager: { listPorts } }),
+      list: () => [monitor.info],
+      runtime: (id: string) => (id === 'm1' ? monitor.runtime : undefined),
+      updateMonitorConfig: vi.fn(),
+      connect,
+      registry: {},
+    });
+
+    await provider.restoreSavedConnections();
+
+    // Windows 全量扫描要起 PowerShell：校验与自动连接必须共用同一次扫描结果
+    expect(listPorts).toHaveBeenCalledTimes(1);
+    expect(connect).toHaveBeenCalledTimes(1);
   });
 });
 

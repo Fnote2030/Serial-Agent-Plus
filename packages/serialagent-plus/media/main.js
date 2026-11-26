@@ -15,7 +15,7 @@
   const vscode = acquireVsCodeApi();
 
   const MAX_HISTORY = 20;
-  // 显示缓冲上限按 UTF-8 总字节数限制，大小来自后台配置项 serialagent.logBufferKB
+  // 显示缓冲上限按 UTF-8 总字节数限制，大小来自后台配置项 serialagent-plus.logBufferKB
   // （默认 1024=1MB，最大 10240=10MB），由扩展侧推送（restoreConfig / updateLogBuffer）
   let logBufferKB = 1024;
   const utf8Encoder = new TextEncoder();
@@ -134,6 +134,8 @@
   let lastPasteKeyAt = 0;
   /** 最近一次已应用的 DOM paste 时间：少数平台先派发 paste 再派发 keydown，反向去重 */
   let lastPasteEventAt = 0;
+  /** 连接成功时是否自动收起 Config 抽屉（后台设置，默认关闭） */
+  let collapseConfigOnConnect = false;
 
   // ---- 多监视器状态：列表 + 按监视器分桶 ----
   /** @type {{ id: string; index: number; name: string; connected: boolean; port: string; baudRate: number; parity: string }[]} */
@@ -165,7 +167,7 @@
       pendingSendAfterConnect: false,
       rxCount: 0,
       txCount: 0,
-      statusText: 'Disconnected',
+      statusText: '',
       statusConnected: false,
       statusPort: '',
       statusBaud: 0,
@@ -228,6 +230,10 @@
       frozenLog = true;
       updateFreezeButton();
     }
+    // 抽屉展开状态随 webview 状态持久化：重载/重新挂载后保持用户的选择
+    if (previousState.configDrawerOpen) {
+      setConfigDrawerOpen(true);
+    }
     updateSendPlaceholder();
   }
 
@@ -238,6 +244,7 @@
       autoScroll: optAutoScroll?.checked || false,
       logFilter: logSearchInput?.value || '',
       frozenLog,
+      configDrawerOpen: !!configDrawer && !configDrawer.classList.contains('hidden'),
     });
   }
 
@@ -249,11 +256,9 @@
     monitorConnectBtn?.addEventListener('click', handleConnectionToggle);
 
     configToggleBtn?.addEventListener('click', () => {
-      const collapsed = configDrawer?.classList.toggle('hidden');
-      if (configToggleBtn) {
-        // aria-expanded 驱动 .config-toggle-icon 的 ▸/▾ 两态（纯 CSS）
-        configToggleBtn.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
-      }
+      const collapsed = configDrawer?.classList.contains('hidden') ?? false;
+      setConfigDrawerOpen(collapsed);
+      saveState();
     });
 
     logArea?.addEventListener('keydown', (event) => {
@@ -538,6 +543,15 @@
       flowControlSelect,
     ].forEach((element) => {
       element?.addEventListener('change', () => {
+        // 用户手选后不再用"恢复的待选端口"覆盖，否则下次刷新会跳回旧设备
+        pendingPort = '';
+        // 选了别的端口后，"设备已不在"的失效项（下拉刷新前可能残留很久）就地清掉
+        if (portSelect) {
+          const selected = portSelect.selectedOptions && portSelect.selectedOptions[0];
+          portSelect.querySelectorAll('option[data-port-missing="1"]').forEach((option) => {
+            if (option !== selected) { option.remove(); }
+          });
+        }
         syncBaudratePreset();
         persistCurrentConfigDraft();
         updateMonitorConfigChips();
@@ -546,6 +560,7 @@
     });
   }
 
+  /** 未连接时用 chip 显示待连接参数；已连接时信息改由状态文字显示（端口 @ 波特率 校验） */
   function updateMonitorConfigChips() {
     const bucket = activeBucket();
     if (bucket.connected) {
@@ -574,6 +589,24 @@
       monitorParityChip.textContent = PARITY_LABELS[parity] ?? PARITY_LABELS.none;
       monitorParityChip.classList.toggle('hidden', !port);
     }
+  }
+
+  /**
+   * 状态文字：已连接显示 `端口 @ 波特率 校验`；未连接不显示文字，
+   * 仅保留状态点（灰色圆点）表示断开。
+   */
+  function applyStatusText(text) {
+    if (!statusText) { return; }
+    statusText.textContent = text;
+    statusText.classList.toggle('hidden', !text);
+  }
+
+  /** 展开/收起串口配置抽屉（按钮、默认状态恢复、可选的连接后自动收起共用） */
+  function setConfigDrawerOpen(open) {
+    if (!configDrawer) { return; }
+    configDrawer.classList.toggle('hidden', !open);
+    // aria-expanded 驱动 .config-toggle-icon 的 ▸/▾ 两态（纯 CSS）
+    configToggleBtn?.setAttribute('aria-expanded', open ? 'true' : 'false');
   }
 
   function bindLogActions() {
@@ -607,6 +640,8 @@
       const bucket = bucketFor(activeMonitorId);
       bucket.logEntries = [];
       bucket.logEntriesBytes = 0;
+      // 无换行的 RX（文本模式下收到的 HEX 数据）停留在实时行，清屏时一并清掉
+      bucket.terminal = { liveLine: '', buffer: '', caret: 0, deviceLine: null };
       renderLogArea(true);
     });
 
@@ -900,6 +935,15 @@
     return `[${now.toTimeString().split(' ')[0]}.${String(now.getMilliseconds()).padStart(3, '0')}]`;
   }
 
+  /** HEX 发送回显：与宿主共用 media/hex-format.js（大写、两字符一组） */
+  function normalizeHexInput(text) {
+    const api = /** @type {any} */ (window).HexFormat;
+    if (api && typeof api.normalizeHexInput === 'function') {
+      return api.normalizeHexInput(text);
+    }
+    return String(text || '').replace(/\s+/g, '').toUpperCase().replace(/(..)/g, '$1 ').trim();
+  }
+
   function syncBaudratePreset() {
     if (!baudratePresetSelect) {
       return;
@@ -927,10 +971,47 @@
   }
 
   /**
+   * 在端口下拉里选中目标端口。
+   * 端口不在列表时插入 `(not available)` 占位项并选中它：既保留上次保存的选择，
+   * 也避免静默选中列表里的第一个设备（可能连到别的板子）。
+   * @param {string} port
+   */
+  function applyPortSelection(port) {
+    if (!portSelect) { return; }
+    // 清掉上一次插入的占位/失效项（同一表单在多监视器间切换，不能残留别的端口）
+    portSelect
+      .querySelectorAll('option[data-port-placeholder="1"], option[data-port-missing="1"]')
+      .forEach((option) => option.remove());
+    if (!port) {
+      // 清空选择：补一个空占位项，避免下拉默认展示第一个设备
+      const placeholder = document.createElement('option');
+      placeholder.value = '';
+      placeholder.textContent = '-- Select port --';
+      placeholder.dataset.portPlaceholder = '1';
+      portSelect.insertBefore(placeholder, portSelect.firstChild);
+      portSelect.value = '';
+      return;
+    }
+    const exists = Array.from(portSelect.options).some((option) => option.value === port);
+    if (!exists) {
+      const missing = document.createElement('option');
+      missing.value = port;
+      missing.textContent = `${port} (not available)`;
+      missing.dataset.portMissing = '1';
+      portSelect.insertBefore(missing, portSelect.firstChild);
+    }
+    portSelect.value = port;
+  }
+
+  /**
    * @param {{ port: string; baudRate: number; dataBits: number; parity: string; stopBits: number; flowControl?: string; lineEnding: string; showTimestamp: boolean; hexMode: boolean; encoding?: string; rxIdleWrapMs?: number }} config
    */
   function applyConfigToInputs(config) {
-    if (portSelect) { portSelect.value = config.port || ''; }
+    if (portSelect) {
+      // 端口列表可能晚于配置到达：记住目标端口，updatePorts 重建选项后再选中
+      pendingPort = config.port || '';
+      applyPortSelection(pendingPort);
+    }
     if (baudrateInput) { baudrateInput.value = String(config.baudRate || 115200); }
     if (databitsSelect) { databitsSelect.value = String(config.dataBits || 8); }
     if (paritySelect) { paritySelect.value = config.parity || 'none'; }
@@ -956,6 +1037,11 @@
     if (settings.encoding !== undefined && encodingSelect) { encodingSelect.value = settings.encoding === 'gbk' ? 'gbk' : 'utf8'; }
     if (settings.rxIdleWrapMs !== undefined && rxIdleWrapInput) {
       rxIdleWrapInput.value = String(Math.max(1, Math.min(60000, Math.floor(settings.rxIdleWrapMs) || 20)));
+    }
+    if (settings.port !== undefined) {
+      // 宿主清空了端口（设备已不在）：表单同步清空，避免看起来还连着别的设备
+      pendingPort = settings.port || '';
+      applyPortSelection(settings.port || '');
     }
   }
 
@@ -1029,7 +1115,7 @@
     saveState();
     // 仅在冻结/过滤确实变化时重建视图（打字等高频同步不重建日志 DOM）
     if (previousFrozen !== frozenLog || previousFilter !== activeLogFilter) {
-      renderLogArea(true);
+      renderLogArea(true, { preserveScroll: true });
     }
   }
 
@@ -1175,10 +1261,13 @@
     vscode.postMessage({ type: 'sendData', monitorId, text: payload, hexSend });
 
     if (monitorId === activeMonitorId && optEcho?.checked) {
-      const body = optTimestamp?.checked
-        ? payload.split('\n').map((line) => `${formatLogTimestamp()} ${line}`).join('\n')
-        : payload;
-      appendLogEntry(`TX>> ${body}`, 'echo', monitorId);
+      const tsPrefix = optTimestamp?.checked ? `${formatLogTimestamp()} ` : '';
+      if (hexSend) {
+        appendLogEntry(`${tsPrefix}TX HEX>> ${normalizeHexInput(payload)}`, 'echo', monitorId);
+      } else {
+        const body = payload.split('\n').map((line) => `${tsPrefix}TX>> ${line}`).join('\n');
+        appendLogEntry(body, 'echo', monitorId);
+      }
     }
 
     const historyIndex = bucket.sendHistory.indexOf(text);
@@ -1269,12 +1358,13 @@
     return !!logArea && !!anchor && !!focus && logArea.contains(anchor) && logArea.contains(focus);
   }
 
-  // 取消选中后立即补渲染选中期间累积的日志（不等下一次数据到达）
+  // 取消选中后立即补渲染选中期间累积的日志（不等下一次数据到达）；
+  // 保留当前滚动位置：用户刚复制完不该被拉回最后一行
   let logAreaWasSelected = false;
   document.addEventListener('selectionchange', () => {
     const selected = logAreaHasSelection();
     if (logAreaWasSelected && !selected && !frozenLog) {
-      renderLogArea(true);
+      renderLogArea(true, { preserveScroll: true });
     }
     logAreaWasSelected = selected;
   });
@@ -1369,7 +1459,7 @@
     }
   }
 
-  function renderLogArea(force) {
+  function renderLogArea(force, options) {
     if (!logArea) {
       return;
     }
@@ -1378,6 +1468,11 @@
     if (!force && (frozenLog || logAreaHasSelection())) {
       return;
     }
+
+    // 保留阅读位置：取消选中/同步状态触发的重建不该把视图拉回最后一行
+    const preserveScroll = !!(options && options.preserveScroll);
+    const previousScrollTop = logArea.scrollTop;
+    const wasAtBottom = logArea.scrollHeight - logArea.scrollTop - logArea.clientHeight <= 4;
 
     logArea.innerHTML = '';
     logEntriesContainer.innerHTML = '';
@@ -1402,7 +1497,10 @@
       filter: activeLogFilter,
     };
     updateEmptyState();
-    if (optAutoScroll?.checked && !frozenLog) {
+
+    if (preserveScroll && !wasAtBottom) {
+      logArea.scrollTop = previousScrollTop; // 原本在看历史：原地不动，忽略 AutoScroll
+    } else if (optAutoScroll?.checked && !frozenLog) {
       scrollLogToBottom();
     }
   }
@@ -1480,7 +1578,9 @@
     switch (message.type) {
       case 'updatePorts': {
         if (!portSelect) { break; }
-        const previousValue = portSelect.value || pendingPort;
+        // 优先用恢复的/待选端口，其次保持当前选择（重建选项会丢失 selection）
+        const previousValue = pendingPort || portSelect.value || '';
+        pendingPort = '';
         portSelect.innerHTML = '';
 
         const ports = message.ports || [];
@@ -1489,21 +1589,19 @@
           option.value = '';
           option.textContent = '-- No ports found --';
           portSelect.appendChild(option);
-        } else {
-          ports.forEach((port) => {
-            const option = document.createElement('option');
-            option.value = port.path;
-            const label = formatPortLabel(port);
-            option.textContent = label;
-            option.title = buildPortTooltip(port);
-            portSelect.appendChild(option);
-          });
+          portSelect.value = '';
+          break;
         }
+        ports.forEach((port) => {
+          const option = document.createElement('option');
+          option.value = port.path;
+          const label = formatPortLabel(port);
+          option.textContent = label;
+          option.title = buildPortTooltip(port);
+          portSelect.appendChild(option);
+        });
 
-        if (previousValue) {
-          portSelect.value = previousValue;
-          pendingPort = '';
-        }
+        applyPortSelection(previousValue || ports[0].path);
         break;
       }
 
@@ -1511,6 +1609,7 @@
         const id = message.monitorId;
         if (!id) { break; }
         const bucket = bucketFor(id);
+        const wasConnected = bucket.connected;
         bucket.connected = !!message.connected;
         bucket.statusConnected = bucket.connected;
         bucket.statusPort = message.port || '';
@@ -1518,7 +1617,7 @@
         bucket.statusParity = message.parity || 'none';
         bucket.statusText = bucket.connected
           ? `${bucket.statusPort} @ ${bucket.statusBaud} ${PARITY_LABELS[bucket.statusParity] ?? PARITY_LABELS.none}`
-          : 'Disconnected';
+          : '';
         if (!bucket.connected) {
           bucket.pendingSendAfterConnect = false;
           bucket.terminal = { liveLine: '', buffer: '', caret: 0, deviceLine: null };
@@ -1535,9 +1634,7 @@
             ? 'status-indicator status-connected'
             : 'status-indicator status-disconnected';
         }
-        if (statusText) {
-          statusText.textContent = bucket.statusText;
-        }
+        applyStatusText(bucket.statusText);
         updateConnectionButtons();
         [portSelect, baudratePresetSelect, baudrateInput, databitsSelect, paritySelect, stopbitsSelect, flowControlSelect].forEach((element) => {
           if (element) { element.disabled = bucket.connected; }
@@ -1548,6 +1645,11 @@
         }
         updateSendControlsDisabled();
         updateEmptyState();
+        // 连接成功钩子（可配置，默认关闭）：仅在断开→连接时收起配置抽屉
+        if (!wasConnected && bucket.connected && collapseConfigOnConnect) {
+          setConfigDrawerOpen(false);
+          saveState();
+        }
         break;
       }
 
@@ -1657,8 +1759,11 @@
           const payload = typeof message.payload === 'string' ? message.payload : message.text;
           const cfg = bucketFor(id).config;
           const useTs = cfg ? !!cfg.showTimestamp : !!optTimestamp?.checked;
-          const body = useTs ? `${formatLogTimestamp()} ${payload}` : payload;
-          appendLogEntry(`TX>> ${body}`, 'echo', id);
+          const tsPrefix = useTs ? `${formatLogTimestamp()} ` : '';
+          const body = message.hexSend
+            ? `${tsPrefix}TX HEX>> ${normalizeHexInput(payload)}`
+            : `${tsPrefix}TX>> ${payload}`;
+          appendLogEntry(body, 'echo', id);
         }
         break;
       }
@@ -1704,9 +1809,7 @@
       case 'renameResult': {
         // 失败时在状态栏短暂提示，并恢复标签/标题行显示（失败不会触发 monitorsChanged）
         if (!message.ok) {
-          if (message.error && statusText) {
-            statusText.textContent = message.error;
-          }
+          if (message.error) { applyStatusText(message.error); }
           titleRenameActive = false;
           renderMonitors();
         }
@@ -1714,8 +1817,7 @@
       }
 
       case 'monitorLimitReached': {
-        const text = message.message || 'Monitor limit reached';
-        if (statusText) { statusText.textContent = text; }
+        applyStatusText(message.message || 'Monitor limit reached');
         break;
       }
 
@@ -1726,6 +1828,8 @@
         bucket.logEntriesBytes = 0;
         bucket.rxCount = 0;
         bucket.txCount = 0;
+        // 实时行也属于日志显示内容：不带换行的 RX 不能残留
+        bucket.terminal = { liveLine: '', buffer: '', caret: 0, deviceLine: null };
         if (id === activeMonitorId) {
           renderLogArea(true);
           if (rxCountEl) { rxCountEl.textContent = 'RX: 0'; }
@@ -1735,7 +1839,7 @@
       }
 
       case 'updateLogBuffer': {
-        // 后台配置项 serialagent.logBufferKB 变化时由扩展推送
+        // 后台配置项 serialagent-plus.logBufferKB 变化时由扩展推送
         if (typeof message.logBufferKB === 'number') {
           logBufferKB = Math.max(1, Math.min(10240, Math.floor(message.logBufferKB) || 1024));
         }
@@ -1780,13 +1884,28 @@
         } else {
           renderQuickCommands();
         }
+        if (message.options && typeof message.options === 'object') {
+          applyUiOptions(message.options);
+        }
         applyUiState(message.uiState || {});
         updateEmptyState();
         break;
       }
 
+      case 'uiOptions': {
+        applyUiOptions(message);
+        break;
+      }
+
     }
   });
+
+  /** 应用后台 UI 行为开关（连接后自动收起配置抽屉等） */
+  function applyUiOptions(options) {
+    if (typeof options.collapseConfigOnConnect === 'boolean') {
+      collapseConfigOnConnect = options.collapseConfigOnConnect;
+    }
+  }
 
   // ---- 多监视器标签栏 ----
   // 编辑器面板视图（无标签栏）：不跟随新建切换激活标签，只在绑定监视器消失时回退
@@ -1855,7 +1974,7 @@
         ? 'status-indicator status-connected'
         : 'status-indicator status-disconnected';
     }
-    if (statusText) { statusText.textContent = bucket.statusText; }
+    if (statusText) { applyStatusText(bucket.statusText); }
     if (rxCountEl) { rxCountEl.textContent = 'RX: ' + formatBytes(bucket.rxCount); }
     if (txCountEl) { txCountEl.textContent = 'TX: ' + formatBytes(bucket.txCount); }
     [portSelect, baudratePresetSelect, baudrateInput, databitsSelect, paritySelect, stopbitsSelect, flowControlSelect].forEach((element) => {

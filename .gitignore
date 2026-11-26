@@ -26,12 +26,8 @@ Thumbs.db
 # VS Code Extension
 packages/serialagent-plus/vsix-package-backup/
 
-# Keil Project - freertos_hello
-_KeilProject/freertos_hello/
-
 # Reference folder
 _Reference/
-_KeilProject
 
 # AI IDE / agent tooling (local only — never commit)
 .cursor/

@@ -2,6 +2,12 @@ import { execFile } from 'child_process';
 import { ListPortsOptions, PortInfo, SerialConfig, DEFAULT_CONFIG, ISerialManager } from './types';
 import { decodeSerialText, encodeSerialText } from './text-codec';
 
+// 与 webview 共用的 HEX 回显格式化（纯函数 UMD 模块）
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const { normalizeHexInput } = require('../media/hex-format.js') as {
+  normalizeHexInput: (text: string) => string;
+};
+
 type SerialPortClass = import('serialport').SerialPort;
 type SerialPortStatic = typeof import('serialport').SerialPort;
 
@@ -289,10 +295,15 @@ export class SerialManager implements SerialRuntime {
     this._appendLogLine(line);
   }
 
-  injectTxLog(data: string): void {
+  injectTxLog(data: string, hexMode = false): void {
+    const label = hexMode ? 'MCP TX HEX>>' : 'MCP TX>>';
+    const body = hexMode ? normalizeHexInput(String(data)) : String(data);
+    const lines = body.split('\n').map((line) => `${label} ${line}`);
+    const bare = lines.join('\n');
     const prefix = this._config.showTimestamp ? `${this._createLogTimestamp()} ` : '';
-    const body = String(data).split('\n').map((line) => `${prefix}MCP TX>> ${line}`).join('\n');
-    this._appendLogLine(body);
+    const decorated = prefix ? lines.map((line) => `${prefix}${line}`).join('\n') : bare;
+    // 缓冲/订阅带时间戳，webview 通道只发原始行（视口显示时自行加时间戳，否则出现双前缀）
+    this._appendLogLine(decorated, bare);
   }
 
   private _createLogTimestamp(): string {

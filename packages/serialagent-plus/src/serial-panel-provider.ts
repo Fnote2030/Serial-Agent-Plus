@@ -4,7 +4,13 @@ import * as path from 'path';
 import * as vscode from 'vscode';
 import { MonitorHost, MonitorHostEvent, MonitorViewInfo } from './monitor-host';
 import { PortAutoRefresh } from './port-auto-refresh';
-import { SerialConfig } from './types';
+import { PortInfo, SerialConfig } from './types';
+
+// 与 webview 共用的 HEX 回显格式化（纯函数 UMD 模块）
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const { normalizeHexInput } = require('../media/hex-format.js') as {
+  normalizeHexInput: (text: string) => string;
+};
 
 const DEFAULT_BAUDRATES = [
   4800, 9600, 19200, 38400, 57600, 74880,
@@ -15,6 +21,8 @@ const DEFAULT_BAUDRATES = [
 const MAX_SEND_HISTORY = 20;
 const MAX_SERIAL_PROFILES = 10;
 const MAX_QUICK_COMMANDS = 12;
+/** 编辑器区已打开监视器面板的持久化键（重启后恢复） */
+const OPEN_PANELS_KEY = 'openEditorMonitors';
 
 interface SerialProfile {
   id: string;
@@ -58,6 +66,8 @@ export class SerialPanelProvider implements vscode.WebviewViewProvider, vscode.D
   private readonly _uiStates = new Map<string, Record<string, unknown>>();
   /** 每监视器日志区显示内容（新视口打开时回放，保证两个视口日志一致） */
   private readonly _logRings = new Map<string, LogRing>();
+  /** 上次保存的端口是否已校验（每次会话只做一次：运行中拔插不清配置，重插后仍可用同一端口） */
+  private _savedPortChecked = false;
 
   constructor(
     private readonly _context: vscode.ExtensionContext,
@@ -141,9 +151,13 @@ export class SerialPanelProvider implements vscode.WebviewViewProvider, vscode.D
       case 'periodicTick': {
         if (event.echo) {
           // 周期发送回显行也进日志环：新视口回放时与已有视口一致
+          // 时间戳在行首、HEX 发送用 TX HEX>> 与文本发送区分
+          const echoBody = event.hexSend
+            ? `TX HEX>> ${normalizeHexInput(event.payload)}`
+            : `TX>> ${event.payload}`;
           this._appendLogRing(
             event.monitorId,
-            `TX>> ${this._prefixTimestamp(event.monitorId, event.payload)}`,
+            this._prefixTimestamp(event.monitorId, echoBody),
             'echo',
           );
         }
@@ -218,12 +232,135 @@ export class SerialPanelProvider implements vscode.WebviewViewProvider, vscode.D
 
     panel.onDidDispose(() => {
       this._panels.delete(panel);
+      this._persistOpenPanels();
       this._updatePortRefreshVisibility();
     });
 
     if (boundMonitorId) {
       this._refreshPanelTitle(panel, boundMonitorId);
+      this._persistOpenPanels();
     }
+  }
+
+  /** 记录当前在编辑器区打开的监视器（重启后恢复；只保存绑定了监视器的面板） */
+  private _persistOpenPanels(): void {
+    const entries = [...this._panels.entries()]
+      .filter(([, id]) => !!id)
+      .map(([panel, id]) => ({ id, viewColumn: panel.viewColumn as number | undefined }));
+    void this._context.workspaceState?.update(OPEN_PANELS_KEY, entries);
+  }
+
+  /** 重启后恢复上次在编辑器区打开的监视器（不抢焦点，列号失效时回退当前组） */
+  public restoreEditorPanels(): void {
+    const saved = this._context.workspaceState?.get<Array<{ id?: unknown; viewColumn?: unknown }>>(
+      OPEN_PANELS_KEY,
+      [],
+    ) ?? [];
+    const groupCount = vscode.window.tabGroups?.all?.length ?? 0;
+    const openIds = new Set([...this._panels.values()]);
+    for (const entry of saved) {
+      const monitorId = typeof entry?.id === 'string' ? entry.id : '';
+      if (!monitorId || openIds.has(monitorId) || !this._host.registry.get(monitorId)) {
+        continue;
+      }
+      const savedColumn = typeof entry.viewColumn === 'number' ? entry.viewColumn : 0;
+      // 只有列号仍落在现有编辑器组内才复用，否则回退到当前组（避免凭空多开分组）
+      const viewColumn = savedColumn >= 1 && savedColumn <= groupCount
+        ? (savedColumn as vscode.ViewColumn)
+        : vscode.ViewColumn.Active;
+      this._createPanel(monitorId, { viewColumn, preserveFocus: true });
+      openIds.add(monitorId);
+    }
+  }
+
+  /**
+   * 启动时恢复上次保存的连接配置：
+   * 1. 校验各监视器保存的端口，设备已不在则清空端口（其余参数保留，可直接改选新设备）；
+   * 2. 按 `serialagent-plus.autoConnectOnStartup` 决定是否自动连接（默认关闭）。
+   * 只扫描一次串口列表（Windows 上带友好名的全量扫描要起 PowerShell，不能两次启动都跑）。
+   */
+  public async restoreSavedConnections(): Promise<void> {
+    const ports = await this._listAvailablePorts();
+    await this.validateSavedPorts(ports);
+    await this.autoConnectOnStartup(ports);
+  }
+
+  /**
+   * 校验上次保存的端口是否仍存在（每次会话只执行一次）。
+   * 设备已拔掉的监视器清空端口并写入警告日志；已连接/未保存端口/扫描失败的监视器不动。
+   * @param ports 已扫描到的端口列表；`null` 表示扫描失败，`undefined` 表示需要自行扫描
+   */
+  public async validateSavedPorts(ports?: PortInfo[] | null): Promise<void> {
+    if (this._savedPortChecked) { return; }
+    const availablePorts = ports === undefined ? await this._listAvailablePorts() : ports;
+    if (!availablePorts) { return; } // 扫描失败：保留配置，不误清
+    this._savedPortChecked = true;
+    const available = new Set(availablePorts.map((port) => port.path));
+    for (const info of this._host.list()) {
+      const rt = this._host.runtime(info.id);
+      if (!rt || rt.manager.isConnected) { continue; }
+      const saved = rt.manager.config.port;
+      if (!saved || available.has(saved)) { continue; }
+      // 只清端口：波特率/帧格式/流控是用户的通用偏好，换个设备通常仍然适用
+      this._host.updateMonitorConfig(info.id, { port: '' });
+      this.postMessage({ type: 'settingsSync', monitorId: info.id, settings: { port: '' } });
+      rt.manager.injectLog(`[WARN] Saved port ${saved} is no longer available, serial config reset\n`);
+    }
+  }
+
+  /**
+   * 启动时自动连接（默认关闭）：只连接保存端口仍存在且当前未连接的监视器。
+   * @param ports 已扫描到的端口列表；`null` 表示扫描失败，`undefined` 表示需要自行扫描
+   */
+  public async autoConnectOnStartup(ports?: PortInfo[] | null): Promise<void> {
+    if (!this._readAutoConnectSetting()) { return; }
+    const availablePorts = ports === undefined ? await this._listAvailablePorts() : ports;
+    if (!availablePorts) { return; }
+    const available = new Set(availablePorts.map((port) => port.path));
+    for (const info of this._host.list()) {
+      const rt = this._host.runtime(info.id);
+      if (!rt || rt.manager.isConnected) { continue; }
+      const saved = rt.manager.config.port;
+      if (!saved || !available.has(saved)) { continue; }
+      const config: SerialConfig = { ...rt.manager.config, port: saved, logBufferKB: this._readLogBufferKB() };
+      const result = await this._host.connect(info.id, config);
+      if (!result.ok) {
+        rt.manager.injectLog(`[WARN] Auto-connect to ${saved} failed: ${result.error ?? 'unknown error'}\n`);
+      }
+    }
+  }
+
+  /** 全量扫描串口（失败返回 null，调用方据此跳过校验/自动连接，避免误清或误报） */
+  private async _listAvailablePorts(): Promise<PortInfo[] | null> {
+    try {
+      return await this._host.primary().manager.listPorts({ metadata: 'full', forceMetadata: true });
+    } catch {
+      return null;
+    }
+  }
+
+  /** 创建编辑器区面板并绑定监视器（showOptions 决定分组与是否抢焦点） */
+  private _createPanel(
+    monitorId: string,
+    showOptions: vscode.ViewColumn | { viewColumn: vscode.ViewColumn; preserveFocus?: boolean },
+  ): void {
+    const meta = this._host.registry.get(monitorId);
+    if (!meta) { return; }
+    const panel = vscode.window.createWebviewPanel(
+      SerialPanelProvider.panelViewType,
+      `${meta.index}=${meta.name}`,
+      showOptions,
+      {
+        enableScripts: true,
+        retainContextWhenHidden: true,
+        localResourceRoots: [this._context.extensionUri],
+      },
+    );
+    panel.iconPath = {
+      light: vscode.Uri.joinPath(this._context.extensionUri, 'media', 'SerialAgentPlus.png'),
+      dark: vscode.Uri.joinPath(this._context.extensionUri, 'media', 'SerialAgentPlus.png'),
+    };
+    this.resolveWebviewPanel(panel, monitorId);
   }
 
   /** 将指定监视器展示到编辑器区（按 monitorOpenTarget 设置选择分组），已打开则前置 */
@@ -239,23 +376,12 @@ export class SerialPanelProvider implements vscode.WebviewViewProvider, vscode.D
         return;
       }
     }
-    const target = vscode.workspace.getConfiguration('serialagent')
+    const target = vscode.workspace.getConfiguration('serialagent-plus')
       .get<'active' | 'beside'>('monitorOpenTarget', 'active');
-    const panel = vscode.window.createWebviewPanel(
-      SerialPanelProvider.panelViewType,
-      `${meta.index}=${meta.name}`,
+    this._createPanel(
+      monitorId,
       target === 'beside' ? vscode.ViewColumn.Beside : vscode.ViewColumn.Active,
-      {
-        enableScripts: true,
-        retainContextWhenHidden: true,
-        localResourceRoots: [this._context.extensionUri],
-      },
     );
-    panel.iconPath = {
-      light: vscode.Uri.joinPath(this._context.extensionUri, 'media', 'SerialAgentPlus.png'),
-      dark: vscode.Uri.joinPath(this._context.extensionUri, 'media', 'SerialAgentPlus.png'),
-    };
-    this.resolveWebviewPanel(panel, monitorId);
   }
 
   private _refreshPanelTitle(panel: vscode.WebviewPanel, monitorId: string): void {
@@ -301,10 +427,31 @@ export class SerialPanelProvider implements vscode.WebviewViewProvider, vscode.D
     this._portAutoRefresh.handleConfigChange();
   }
 
-  /** 读取后台配置 serialagent.logBufferKB（钳制 1..10240） */
+  /** 读取后台配置 serialagent-plus.logBufferKB（钳制 1..10240） */
   private _readLogBufferKB(): number {
-    const kb = vscode.workspace.getConfiguration('serialagent').get<number>('logBufferKB', 1024);
+    const kb = vscode.workspace.getConfiguration('serialagent-plus').get<number>('logBufferKB', 1024);
     return Math.max(1, Math.min(10240, Math.floor(kb) || 1024));
+  }
+
+  /** UI 行为开关（默认关闭，保持用户当前布局不被自动改变） */
+  private _readUiOptions(): { collapseConfigOnConnect: boolean } {
+    return {
+      collapseConfigOnConnect: vscode.workspace
+        .getConfiguration('serialagent-plus')
+        .get<boolean>('collapseConfigOnConnect', false),
+    };
+  }
+
+  /** 启动时是否自动连接保存的端口（默认关闭） */
+  private _readAutoConnectSetting(): boolean {
+    return vscode.workspace
+      .getConfiguration('serialagent-plus')
+      .get<boolean>('autoConnectOnStartup', false);
+  }
+
+  /** 设置变更：把 UI 开关同步到所有视口 */
+  public handleUiOptionsChange(): void {
+    this.postMessage({ type: 'uiOptions', ...this._readUiOptions() });
   }
 
   /** 配置变化：同步所有监视器与已打开的 webview */
@@ -343,7 +490,7 @@ export class SerialPanelProvider implements vscode.WebviewViewProvider, vscode.D
     this._trimLogRing(ring);
   }
 
-  /** 按 serialagent.logBufferKB 裁剪（与 webview 一致：至少保留最新一条） */
+  /** 按 serialagent-plus.logBufferKB 裁剪（与 webview 一致：至少保留最新一条） */
   private _trimLogRing(ring: LogRing): void {
     const limit = this._readLogBufferKB() * 1024;
     while (ring.entries.length > 1 && ring.bytes > limit) {
@@ -357,8 +504,16 @@ export class SerialPanelProvider implements vscode.WebviewViewProvider, vscode.D
     this._logRings.delete(monitorId);
   }
 
-  /** 清空某监视器日志：清日志环 + 广播给所有视口（bridge/MCP 与 webview 按钮共用） */
+  /** 清空某监视器日志：缓冲 + 计数 + 终端实时行 + 回放环，并广播给所有视口 */
   public clearMonitorLog(monitorId: string): void {
+    const rt = this._host.runtime(monitorId);
+    if (rt) {
+      rt.manager.clearLog();
+      rt.manager.resetCounters();
+      rt.session.resetEditing();
+      // 无换行的 RX（如文本模式下收到的 HEX 数据）停留在实时行，必须一起清掉
+      rt.session.clearLive();
+    }
     this._clearLogRing(monitorId);
     this.postMessage({ type: 'clearLog', monitorId });
   }
@@ -508,7 +663,7 @@ export class SerialPanelProvider implements vscode.WebviewViewProvider, vscode.D
   }
 
   private _initializeView(webview: vscode.Webview, monitorId?: string): void {
-    // 缓冲上限来自后台配置项 serialagent.logBufferKB，应用到所有监视器
+    // 缓冲上限来自后台配置项 serialagent-plus.logBufferKB，应用到所有监视器
     this.handleLogBufferConfigChange();
 
     this._setupWebviewMessageHandler(webview, monitorId);
@@ -540,6 +695,7 @@ export class SerialPanelProvider implements vscode.WebviewViewProvider, vscode.D
       serialProfiles: this._loadSerialProfiles(),
       quickCommands: this._loadQuickCommands(),
       uiState: this._loadPanelUiState(),
+      options: this._readUiOptions(),
     });
 
     // 编辑器面板绑定指定监视器：恢复完成后切换激活标签
@@ -664,11 +820,6 @@ export class SerialPanelProvider implements vscode.WebviewViewProvider, vscode.D
         }
 
         case 'clearLog': {
-          const rt = this._host.runtime(monitorId);
-          if (!rt) { break; }
-          rt.manager.clearLog();
-          rt.manager.resetCounters();
-          rt.session.resetEditing();
           this.clearMonitorLog(monitorId);
           break;
         }
@@ -786,7 +937,9 @@ export class SerialPanelProvider implements vscode.WebviewViewProvider, vscode.D
           if (data.config && monitorId) {
             const rt = this._host.runtime(monitorId);
             if (rt) {
-              this._host.registry.updateConfig(monitorId, { ...rt.manager.config, ...data.config });
+              // 同时写入 manager（运行时配置）与 registry（持久化）：两者不一致时，
+              // 新视口恢复、启动校验（设备是否还在）会读到旧的端口
+              this._host.updateMonitorConfig(monitorId, { ...rt.manager.config, ...data.config });
             }
           }
           break;
@@ -823,6 +976,7 @@ export class SerialPanelProvider implements vscode.WebviewViewProvider, vscode.D
 
   private _getHtmlForWebview(webview: vscode.Webview, panelMode = false): string {
     const scriptUri = webview.asWebviewUri(vscode.Uri.joinPath(this._context.extensionUri, 'media', 'main.js'));
+    const hexFormatUri = webview.asWebviewUri(vscode.Uri.joinPath(this._context.extensionUri, 'media', 'hex-format.js'));
     const styleResetUri = webview.asWebviewUri(vscode.Uri.joinPath(this._context.extensionUri, 'media', 'reset.css'));
     const styleVSCodeUri = webview.asWebviewUri(vscode.Uri.joinPath(this._context.extensionUri, 'media', 'vscode.css'));
     const styleMainUri = webview.asWebviewUri(vscode.Uri.joinPath(this._context.extensionUri, 'media', 'main.css'));
@@ -873,7 +1027,7 @@ export class SerialPanelProvider implements vscode.WebviewViewProvider, vscode.D
     </div>
     <div class="monitor-status-bar">
       <span id="status-dot" class="status-indicator status-disconnected"></span>
-      <span id="status-text">Disconnected</span>
+      <span id="status-text" class="hidden"></span>
       <span id="monitor-port-chip" class="config-chip hidden"></span>
       <span id="monitor-baud-chip" class="config-chip hidden"></span>
       <span id="monitor-parity-chip" class="config-chip hidden"></span>
@@ -1050,6 +1204,7 @@ export class SerialPanelProvider implements vscode.WebviewViewProvider, vscode.D
   </section>
   </div>
 
+  <script nonce="${nonce}" src="${hexFormatUri}"></script>
   <script nonce="${nonce}" src="${scriptUri}"></script>
 </body>
 </html>`;

@@ -566,6 +566,18 @@ describe('Bridge Server API', () => {
       expect(logRes.data.lines).toContain('Firmware v1.0.0');
     });
 
+    it('HEX 发送的回显标注为 MCP TX HEX>> 并规范化字节', async () => {
+      mock.setMockPorts([{ path: 'COM3' }]);
+      await mock.connect({ port: 'COM3', baudRate: 115200, dataBits: 8, parity: 'none', stopBits: 1, lineEnding: 'lf', showTimestamp: false, hexMode: false });
+
+      const res = await authRequest('POST', '/api/send', { data: '112233', hexMode: true });
+      expect(res.status).toBe(200);
+
+      const logRes = await authRequest('GET', '/api/log');
+      expect(logRes.data.lines).toContain('MCP TX HEX>> 11 22 33');
+      expect(logRes.data.lines).not.toContain('MCP TX>> 112233');
+    });
+
     it('并发 send-and-wait 请求应各自匹配到对应响应', async () => {
       mock.setMockPorts([{ path: 'COM3' }]);
       await mock.connect({ port: 'COM3', baudRate: 115200, dataBits: 8, parity: 'none', stopBits: 1, lineEnding: 'lf', showTimestamp: false, hexMode: false });
@@ -640,6 +652,8 @@ describe('Bridge Server API', () => {
       expect(res.headers['access-control-allow-origin']).toBe('http://localhost:3000');
       expect(String(res.headers['access-control-allow-methods'])).toContain('GET');
       expect(String(res.headers['access-control-allow-methods'])).toContain('POST');
+      // DELETE 端点（/api/monitors/{ref}）必须在预检里声明，否则浏览器会拦截
+      expect(String(res.headers['access-control-allow-methods'])).toContain('DELETE');
       expect(String(res.headers['access-control-allow-headers'])).toContain('Authorization');
     });
 
@@ -651,6 +665,18 @@ describe('Bridge Server API', () => {
       expect(res.headers['access-control-allow-origin']).toBeUndefined();
       expect(String(res.headers['access-control-allow-methods'])).toContain('GET');
       expect(String(res.headers['access-control-allow-headers'])).toContain('Authorization');
+    });
+
+    it('失败请求的响应错误码写入 Bridge 日志（便于排查浏览器/脚本调用）', async () => {
+      logger.lines.length = 0;
+      const res = await httpRequest(port, 'POST', '/api/send', { monitor: '1' }, {
+        'Authorization': `Bearer ${token}`,
+      });
+      expect(res.status).toBe(400);
+      expect(res.data.error.code).toBe('MISSING_REQUIRED_FIELD');
+      expect(logger.lines.some((line) => (
+        line.includes('400') && line.includes('MISSING_REQUIRED_FIELD') && line.includes('POST /api/send')
+      ))).toBe(true);
     });
 
     it('非法 JSON body 应返回 400 且包含统一错误信息', async () => {

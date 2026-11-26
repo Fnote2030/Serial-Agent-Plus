@@ -1,6 +1,6 @@
 {
   "name": "@fnote2030/serialagent-plus-mcp",
-  "version": "1.1.0",
+  "version": "1.0.0",
   "description": "MCP server for Serial Agent Plus (unofficial fork of Rance-OwO/Serial-Agent). Requires the Serial Agent Plus VS Code extension and local Bridge.",
   "author": "Fnote2030",
   "license": "MIT",

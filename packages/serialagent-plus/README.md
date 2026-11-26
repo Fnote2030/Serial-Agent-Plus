@@ -62,8 +62,9 @@ AI IDE / Agent Client
 - 标签栏管理多个 Serial Monitor：`Serial Monitor` 标题行右侧 `+` 新建（满 10 禁用）、标签 `×` 删除（静默断开；仅剩一个时不显示 ×）、双击标签重命名（唯一性校验）；标题行按 `序号=名称` 显示（与标签一致，序号不可改），双击标题行名称同样可重命名，重命名结果实时同步到标签、标题行与编辑器区面板标题
 - 序号与默认标题均按最小空闲分配（`1=Serial Monitor1` 展示格式）；重命名后序号前缀保留，序号终身不变
 - 每个监视器独立的连接配置、日志缓冲、发送历史与终端会话；同一端口被另一监视器占用时拒绝连接并指明占用者
+- 连接配置（端口/波特率/帧格式/流控等）按监视器持久化：重启后端口下拉仍选中上次使用的设备；设备已不在时清空端口并写入 `[WARN]` 日志（波特率等偏好保留，直接改选新设备即可）。是否在启动时自动连接由设置项 `serialagent-plus.autoConnectOnStartup` 控制（默认关闭）
 - 侧边栏标签页与编辑器区面板是同一监视器的两个视口：日志与终端快照、发送草稿/历史、显示/发送/视图选项、串口配置表单、快捷指令与 `Cycle` 周期发送状态全部跨视口实时同步（周期发送定时器只在扩展宿主运行一份，两个视口同时打开也只按周期发送一次）
-- 编辑器选项卡栏右侧的电路板图标（`Serial Monitor`）点击后直接在按钮下方弹出下拉菜单，按序号（`Monitor 1`…）列出所有监视器，选中即在编辑器区打开；菜单末尾的 `Select Serial Monitor...` 提供带名称与连接状态的详细列表（VS Code 贡献式菜单的条目文字是静态的，无法随重命名/连接状态变化，故详细信息放在该入口）；侧边栏中监视器标题行右侧按钮直接展开当前监视器（编辑器区面板内不显示）；打开位置由设置项 `serialagent.monitorOpenTarget` 决定（`active` 当前编辑器组 / `beside` 右侧新组）
+- 编辑器选项卡栏右侧的电路板图标（`Serial Monitor`）点击后直接在按钮下方弹出下拉菜单，按序号（`Monitor 1`…）列出所有监视器，选中即在编辑器区打开；菜单末尾的 `Select Serial Monitor...` 提供带名称与连接状态的详细列表（VS Code 贡献式菜单的条目文字是静态的，无法随重命名/连接状态变化，故详细信息放在该入口）；侧边栏中监视器标题行右侧按钮直接展开当前监视器（编辑器区面板内不显示）；打开位置由设置项 `serialagent-plus.monitorOpenTarget` 决定（`active` 当前编辑器组 / `beside` 右侧新组）
 
 ### 串口工作台
 
@@ -71,9 +72,11 @@ AI IDE / Agent Client
 - 在同一视图里查看 RX 日志并发送 TX 命令；日志工具条提供搜索过滤、`Freeze` 冻结、`Copy` 复制、`Save` 导出与一键清空，监视器状态栏实时显示 RX/TX 字节计数
 - 显示选项：`Time` 逐行时间戳、`HEX Recv` HEX 接收显示、`Echo` 回显发送内容、`Auto Scroll` 自动跟随最新日志、`Wrap` HEX 空闲换行阈值、`Encoding` 编码切换（`UTF-8` / `GBK`，适配打印中文的固件）
 - 发送区支持 `Hex` 发送、`End` 行尾（None/LF/CRLF/CR）、发送历史下拉（可点选复用、可单条删除）与 `Cycle` 周期发送（可指定 ms 周期，默认关闭；定时器在扩展宿主侧统一运行，多视口共享同一节拍）
+- 回显格式统一为 `[时间] TX>> 内容`（时间戳在行首，手动发送 / 快捷指令 / `Cycle` 一致）；HEX 发送标注为 `[时间] TX HEX>> 11 22 33`（字节规范化成大写、两字符一组），`Echo` 关闭时不显示；MCP 发送的回显为 `MCP TX>> …` / `MCP TX HEX>> …`
 - HEX 显示的空闲换行：字节间隔超过 `Wrap` 选项（默认 20ms，最低 1ms）即换行提交，不再按串口分块断行，同一连发数据的 hex 字节合并为一行；文本显示仍按 `\r\n` 换行，无 `\r\n` 的数据（提示符/回显）保持实时行
-- `Ctrl+C`：日志区有选中文本时执行系统复制，无选中时才向设备发送 ETX 中断
-- 日志缓冲上限通过 VS Code 设置项 `serialagent.logBufferKB` 配置（KB，默认 1024=1MB，最大 10240=10MB），按 UTF-8 总字节数限制、超限从最旧端丢弃，日志区显示与扩展日志缓冲（Save/MCP 回看）共用；无换行的未完成行另受 1MB RX 字节缓冲保护
+- `Ctrl+C`：日志区有选中文本时执行系统复制，无选中时才向设备发送 ETX 中断；取消选中不会把正在阅读的日志位置跳回最后一行（AutoScroll 只跟随新数据）
+- 日志区 `Clear` 同时清空提交行、RX/TX 计数与终端实时行（文本模式下收到的无换行 HEX 数据不会残留在屏幕上）
+- 日志缓冲上限通过 VS Code 设置项 `serialagent-plus.logBufferKB` 配置（KB，默认 1024=1MB，最大 10240=10MB），按 UTF-8 总字节数限制、超限从最旧端丢弃，日志区显示与扩展日志缓冲（Save/MCP 回看）共用；无换行的未完成行另受 1MB RX 字节缓冲保护
 - `Save` 导出当前监视器日志：默认文件名 `serial-agent-plus-<监视器名>-<YYYYMMDDHHmmss>.log`（名称中的空格与非法字符转成 `-`，默认目录为工作区根目录），文件开头追加串口信息头（监视器、连接状态、端口、波特率、帧格式、流控、编码、RX/TX 字节数、导出时间、行数），随后是 `# ===== log data =====` 与日志正文
 - `Freeze` 冻结日志视图：冻结期间数据仍在后台累积但视图完全停住（便于阅读/复制定格画面，选中文本不会被新日志冲掉），`Resume` 后一次性刷新；选中文本期间视图同样暂停重建，保证 `Ctrl+C` 可复制
 - 日志面板内置终端直连：点击日志区后，可打印字符进入本地输入行并直接拼接在设备实时提示符行后显示（如 `msh > ls▌`，无实时行时回退 `>` 前缀，不再单独显示一行），`Enter` 将整行连同 CR 发送给设备；支持 `Ctrl+V` / 右键菜单粘贴（由扩展侧读取剪贴板，制表符转空格、控制字符丢弃、单次上限 4096 字符；单行粘贴只填入输入行不执行，多行按行逐条提交，与逐行键入 + 回车一致）；`Tab`/`↑`/`↓`/方向键/Home/End/Del 等**控制键立即透传**对应字节序列（ESC[A/B 等）给设备；未连接时发送会自动按当前配置连接。`↑/↓` 历史召回与 `Tab` 补全通过设备 redraw 同步回本地输入行，此时设备编辑缓冲已持有该行——Enter 只补发 CR，本地改过则先退格清空设备行再整行发送，避免命令被设备追加成 `lsls`
@@ -100,24 +103,6 @@ AI IDE / Agent Client
 
 如果你后面要接 AI 闭环，这个 Bridge 是关键中间层。  
 它不是给浏览器地址栏直接访问的普通网页，而是一个带认证的本地 API 运行时。
-
-下面几张图对应 Bridge 相关的教学场景：
-
-- 第一张：本地发现文件 `bridge.json`
-- 第二张：浏览器直接访问 Bridge 接口时的认证提示
-- 第三张：带 token 的 API 调试方式
-
-<p align="left">
-  <img src="./image/README/bridge-discovery-file.png" alt="Bridge discovery file" width="420" />
-</p>
-
-<p align="left">
-  <img src="./image/README/bridge-auth-required.png" alt="Bridge auth required" width="420" />
-</p>
-
-<p align="left">
-  <img src="./image/README/bridge-api-testing.png" alt="Bridge API testing" width="420" />
-</p>
 
 状态栏左侧还有两个常驻入口：`$(plug) Serial <已连接>/<总数>` 点击可聚焦面板，`$(broadcast) SA Bridge Ready` / `$(circle-slash) SA Bridge Off` 点击可启停 Bridge。
 
@@ -250,7 +235,7 @@ http://127.0.0.1:<port>/api/status
 
 也就是说：
 
-- 浏览器地址栏直接打开：通常不适合
+- 浏览器地址栏直接打开：只能看到 `AUTH_REQUIRED`（地址栏无法附加请求头）
 - PowerShell / curl / Postman / Apifox：可以带 token 调试
 - MCP 客户端：本质上也是先读 `bridge.json` 再带 token 访问
 
@@ -347,11 +332,13 @@ MCP 本身只是工具暴露层，真正持有串口状态和日志缓冲的是�
 
 | 设置 | 默认值 | 说明 |
 | --- | --- | --- |
-| `serialagent.portAutoRefresh` | `true` | 面板可见时自动刷新串口列表 |
-| `serialagent.portRefreshIntervalMs` | `3000` | 自动刷新轮询间隔（1000–30000 ms） |
-| `serialagent.portRefreshMetadataIntervalMs` | `30000` | Windows 下刷新友好端口名的间隔（≥5000 ms） |
-| `serialagent.logBufferKB` | `1024` | 日志缓冲上限（KB，最大 10240），日志区与 Save/MCP 回看共用 |
-| `serialagent.monitorOpenTarget` | `active` | 在编辑器区打开监视器的位置：`active` 当前编辑器组 / `beside` 右侧新组 |
+| `serialagent-plus.portAutoRefresh` | `true` | 面板可见时自动刷新串口列表 |
+| `serialagent-plus.portRefreshIntervalMs` | `3000` | 自动刷新轮询间隔（1000–30000 ms） |
+| `serialagent-plus.portRefreshMetadataIntervalMs` | `30000` | Windows 下刷新友好端口名的间隔（≥5000 ms） |
+| `serialagent-plus.logBufferKB` | `1024` | 日志缓冲上限（KB，最大 10240），日志区与 Save/MCP 回看共用 |
+| `serialagent-plus.monitorOpenTarget` | `active` | 在编辑器区打开监视器的位置：`active` 当前编辑器组 / `beside` 右侧新组 |
+| `serialagent-plus.collapseConfigOnConnect` | `false` | 连接成功（断开→连接）时自动收起 Config 抽屉；默认关闭，打开串口不会改变当前布局 |
+| `serialagent-plus.autoConnectOnStartup` | `false` | 启动时自动连接各监视器上次保存的端口；设备已不在的监视器不连接（端口会被清空）；默认关闭 |
 
 ## 更多文档入口
 

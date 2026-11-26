@@ -1,6 +1,6 @@
 {
-  "name": "serial-agent-plus",
-  "version": "1.1.0",
+  "name": "serialagent-plus",
+  "version": "1.0.0",
   "private": true,
   "description": "Serial Agent Plus monorepo - VS Code extension, MCP server, and skill source. Unofficial fork of Rance-OwO/Serial-Agent with enhanced serial features.",
   "repository": {

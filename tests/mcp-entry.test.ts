@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { spawn } from 'node:child_process';
 import * as path from 'node:path';
+import mcpPackage from '../packages/serialagent-plus-mcp/package.json';
 
 /**
  * MCP 入口回归：dist/index.js 直接运行必须启动服务器并响应 initialize。
@@ -12,9 +13,9 @@ describe('MCP dist entry starts the server (bin/npx scenario)', () => {
     const entry = path.resolve(__dirname, '..', 'packages', 'serialagent-plus-mcp', 'dist', 'index.js');
     const child = spawn(process.execPath, [entry], { stdio: ['pipe', 'pipe', 'pipe'] });
 
-    const result = await new Promise<{ ok: boolean; detail: string }>((resolve) => {
+    const result = await new Promise<{ ok: boolean; detail: string; version: string }>((resolve) => {
       let buffer = '';
-      const timer = setTimeout(() => resolve({ ok: false, detail: `timeout; stdout=${JSON.stringify(buffer.slice(0, 200))}` }), 10000);
+      const timer = setTimeout(() => resolve({ ok: false, detail: `timeout; stdout=${JSON.stringify(buffer.slice(0, 200))}`, version: '' }), 10000);
       child.stdout.on('data', (chunk: Buffer) => {
         buffer += chunk.toString();
         const idx = buffer.indexOf('\n');
@@ -24,7 +25,7 @@ describe('MCP dist entry starts the server (bin/npx scenario)', () => {
           const resp = JSON.parse(line);
           if (resp.id === 1 && resp.result?.serverInfo?.name) {
             clearTimeout(timer);
-            resolve({ ok: true, detail: resp.result.serverInfo.name });
+            resolve({ ok: true, detail: resp.result.serverInfo.name, version: resp.result.serverInfo.version });
           }
         } catch { /* not JSON-RPC */ }
       });
@@ -40,5 +41,7 @@ describe('MCP dist entry starts the server (bin/npx scenario)', () => {
 
     expect(result.ok).toBe(true);
     expect(result.detail).toBe('serialagent-plus-mcp');
+    // serverInfo 版本必须跟随 package.json（曾写死 1.0.1 与包版本不一致）
+    expect(result.version).toBe(mcpPackage.version);
   }, 15000);
 });

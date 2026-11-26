@@ -19,7 +19,7 @@ English version: [README_EN.md](README_EN.md)
 
 先安装 VS Code 插件 `Serial Agent Plus`。这是整条本地调试链路的运行时入口。
 
-![VS Code 插件安装](assets/vscode插件安装.png)
+![VS Code 插件安装](assets/vscode-extension-install.png)
 
 插件文档：
 
@@ -28,7 +28,7 @@ English version: [README_EN.md](README_EN.md)
 ### 第二步：给 AI Agent 配置 MCP
 
 推荐使用 `CC Switch` 进行入下图 MCP 配置。
-![CC Switch 配置MCP](assets/ccswitch配置MCP.png)
+![CC Switch 配置 MCP](assets/ccswitch-mcp-config.png)
 
 如果你习惯让 AI 自己完成配置，也可以直接把下面这段提示词发给 AI：
 

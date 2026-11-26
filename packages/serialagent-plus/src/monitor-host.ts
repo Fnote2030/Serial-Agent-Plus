@@ -331,7 +331,7 @@ export class MonitorHost implements vscode.Disposable {
   private _onManagerLog(id: string, text: string): void {
     const rt = this._runtimes.get(id);
     if (!rt) { return; }
-    if (text.includes('MCP TX>> ')) {
+    if (/MCP TX(?: HEX)?>> /.test(text)) {
       // MCP 发送回显：直接作为 echo 日志行，不进终端行模拟
       const cleaned = text.replace(/\u001b\[[0-9;?]*[A-Za-z]/g, '').replace(/\n$/, '');
       this._onEvent({ type: 'logLines', monitorId: id, lines: [cleaned], kind: 'echo' });

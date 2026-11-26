@@ -38,17 +38,17 @@ function updateStatusBarAggregate(): void {
   statusBarItem.backgroundColor = undefined;
 }
 
-/** 上下文键 serialagent.monitorN：控制编辑器标题下拉里"Monitor N"项按已分配序号显示 */
+/** 上下文键 serialagent-plus.monitorN：控制编辑器标题下拉里"Monitor N"项按已分配序号显示 */
 function syncMonitorContextKeys(): void {
   const used = new Set(monitorHost.list().map((m) => m.index));
   for (let i = 1; i <= 10; i++) {
-    void vscode.commands.executeCommand('setContext', `serialagent.monitor${i}`, used.has(i));
+    void vscode.commands.executeCommand('setContext', `serialagent-plus.monitor${i}`, used.has(i));
   }
 }
 
 export function activate(context: vscode.ExtensionContext) {
   bridgeStatusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 101);
-  bridgeStatusBarItem.command = 'serialagent.toggleBridge';
+  bridgeStatusBarItem.command = 'serialagent-plus.toggleBridge';
   updateBridgeStatusBar();
   bridgeStatusBarItem.show();
   context.subscriptions.push(bridgeStatusBarItem);
@@ -89,6 +89,10 @@ export function activate(context: vscode.ExtensionContext) {
   bridgeServer.setOnUiClear((monitorId) => {
     provider.clearMonitorLog(monitorId);
   });
+  // 重启后恢复上次在编辑器区打开的监视器面板（在 bridge 启动前恢复，避免抢焦点）
+  provider.restoreEditorPanels();
+  // 上次保存的串口配置：设备已不在则重置端口；按设置决定是否自动连接（默认关闭）
+  void provider.restoreSavedConnections();
   bridgeServer.start().then(() => {
     bridgeRunning = true;
     updateBridgeStatusBar();
@@ -101,7 +105,7 @@ export function activate(context: vscode.ExtensionContext) {
   });
 
   context.subscriptions.push(
-    vscode.commands.registerCommand('serialagent.addMonitor', () => {
+    vscode.commands.registerCommand('serialagent-plus.addMonitor', () => {
       if (!monitorHost.registry.canCreate()) {
         vscode.window.showWarningMessage('[Serial Agent Plus] Monitor limit reached (10)');
         return;
@@ -111,16 +115,16 @@ export function activate(context: vscode.ExtensionContext) {
   );
 
   context.subscriptions.push(
-    vscode.commands.registerCommand('serialagent.refreshPorts', async () => {
+    vscode.commands.registerCommand('serialagent-plus.refreshPorts', async () => {
       await provider.refreshPortList({ forceFull: true });
     }),
   );
 
   context.subscriptions.push(
-    vscode.commands.registerCommand('serialagent.toggleConnection', () => {
+    vscode.commands.registerCommand('serialagent-plus.toggleConnection', () => {
       const primary = monitorHost.primary().manager;
       if (primary.isConnected) {
-        void vscode.commands.executeCommand('serialagent.disconnect');
+        void vscode.commands.executeCommand('serialagent-plus.disconnect');
       } else {
         void vscode.commands.executeCommand('serialagent-plus.serialPanel.focus');
       }
@@ -128,23 +132,20 @@ export function activate(context: vscode.ExtensionContext) {
   );
 
   context.subscriptions.push(
-    vscode.commands.registerCommand('serialagent.disconnect', async () => {
+    vscode.commands.registerCommand('serialagent-plus.disconnect', async () => {
       await monitorHost.primary().manager.disconnect();
     }),
   );
 
   context.subscriptions.push(
-    vscode.commands.registerCommand('serialagent.clearLog', () => {
+    vscode.commands.registerCommand('serialagent-plus.clearLog', () => {
       const rt = monitorHost.primary();
-      rt.manager.clearLog();
-      rt.manager.resetCounters();
-      rt.session.resetEditing();
       serialPanelProviderRef?.clearMonitorLog(rt.meta.id);
     }),
   );
 
   context.subscriptions.push(
-    vscode.commands.registerCommand('serialagent.toggleBridge', async () => {
+    vscode.commands.registerCommand('serialagent-plus.toggleBridge', async () => {
       if (bridgeRunning) {
         await bridgeServer.stop();
         bridgeRunning = false;
@@ -167,7 +168,7 @@ export function activate(context: vscode.ExtensionContext) {
   );
 
   context.subscriptions.push(
-    vscode.commands.registerCommand('serialagent.openInTab', async () => {
+    vscode.commands.registerCommand('serialagent-plus.openInTab', async () => {
       // 下拉菜单末尾项：Quick Pick 提供名称/连接状态等更详细的信息后打开到编辑器区
       const infos = monitorHost.list();
       const items = infos.map((info) => ({
@@ -185,11 +186,11 @@ export function activate(context: vscode.ExtensionContext) {
     }),
   );
 
-  // 编辑器选项卡栏下拉"Monitor N"项：按序号展开对应监视器（可见性由 serialagent.monitorN 上下文键控制）
+  // 编辑器选项卡栏下拉"Monitor N"项：按序号展开对应监视器（可见性由 serialagent-plus.monitorN 上下文键控制）
   for (let index = 1; index <= 10; index++) {
     const idx = index;
     context.subscriptions.push(
-      vscode.commands.registerCommand(`serialagent.openMonitor${idx}`, () => {
+      vscode.commands.registerCommand(`serialagent-plus.openMonitor${idx}`, () => {
         const info = monitorHost.list().find((m) => m.index === idx);
         if (info) {
           provider.openMonitorInEditor(info.id);
@@ -203,14 +204,17 @@ export function activate(context: vscode.ExtensionContext) {
   context.subscriptions.push(
     vscode.workspace.onDidChangeConfiguration((event) => {
       if (
-        event.affectsConfiguration('serialagent.portAutoRefresh')
-        || event.affectsConfiguration('serialagent.portRefreshIntervalMs')
-        || event.affectsConfiguration('serialagent.portRefreshMetadataIntervalMs')
+        event.affectsConfiguration('serialagent-plus.portAutoRefresh')
+        || event.affectsConfiguration('serialagent-plus.portRefreshIntervalMs')
+        || event.affectsConfiguration('serialagent-plus.portRefreshMetadataIntervalMs')
       ) {
         provider.handlePortRefreshConfigChange();
       }
-      if (event.affectsConfiguration('serialagent.logBufferKB')) {
+      if (event.affectsConfiguration('serialagent-plus.logBufferKB')) {
         provider.handleLogBufferConfigChange();
+      }
+      if (event.affectsConfiguration('serialagent-plus.collapseConfigOnConnect')) {
+        provider.handleUiOptionsChange();
       }
     }),
   );

@@ -45,6 +45,32 @@ describe('SerialManager RX timestamp routing', () => {
     expect(buffer[1]).toMatch(/^\[\d{2}:\d{2}:\d{2}\.\d{3}\] $/);
     expect(buffer[2]).toMatch(/^\[\d{2}:\d{2}:\d{2}\.\d{3}\] thread pri \.\.\.$/);
   });
+
+  it('MCP TX echo carries exactly one timestamp: raw text on the webview channel', () => {
+    manager.injectTxLog('help');
+
+    // webview 显示时自行加时间戳；宿主再塞一个就会显示成 "[t1] [t2] MCP TX>> help"
+    expect(webviewLines).toEqual(['MCP TX>> help\n']);
+    const buffer = manager.getLogBuffer();
+    expect(buffer[buffer.length - 1]).toMatch(/^\[\d{2}:\d{2}:\d{2}\.\d{3}\] MCP TX>> help$/);
+  });
+
+  it('MCP TX echo stays plain on both channels when timestamps are off', () => {
+    manager.updateSettings({ showTimestamp: false });
+    manager.injectTxLog('help');
+
+    expect(webviewLines).toEqual(['MCP TX>> help\n']);
+    expect(manager.getLogBuffer()[manager.getLogBuffer().length - 1]).toBe('MCP TX>> help');
+  });
+
+  it('MCP HEX echo is labelled MCP TX HEX>> with normalised bytes and a leading timestamp', () => {
+    manager.injectTxLog('112233', true);
+
+    // 时间戳在行首（"TX 在时间前面" 的旧格式已修正），HEX 回显用独立标签
+    expect(webviewLines).toEqual(['MCP TX HEX>> 11 22 33\n']);
+    const last = manager.getLogBuffer()[manager.getLogBuffer().length - 1];
+    expect(last).toMatch(/^\[\d{2}:\d{2}:\d{2}\.\d{3}\] MCP TX HEX>> 11 22 33$/);
+  });
 });
 
 describe('SerialManager log buffer byte cap (logBufferKB)', () => {

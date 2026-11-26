@@ -2,8 +2,9 @@
   "name": "serialagent-plus",
   "displayName": "Serial Agent Plus",
   "description": "Serial monitor and MCP bridge for embedded debugging in VS Code. Unofficial fork of Rance-OwO/Serial-Agent focused on enhanced serial features.",
-  "version": "1.2.1",
+  "version": "1.0.0",
   "publisher": "Fnote2030",
+  "author": "Fnote2030",
   "license": "MIT",
   "icon": "media/SerialAgentPlus.png",
   "homepage": "https://github.com/Fnote2030/Serial-Agent-Plus",
@@ -61,98 +62,103 @@
     },
     "commands": [
       {
-        "command": "serialagent.refreshPorts",
+        "command": "serialagent-plus.refreshPorts",
         "title": "Refresh Serial Ports",
         "category": "Serial Agent Plus",
         "icon": "$(refresh)"
       },
       {
-        "command": "serialagent.disconnect",
+        "command": "serialagent-plus.disconnect",
         "title": "Disconnect Serial Port",
         "category": "Serial Agent Plus"
       },
       {
-        "command": "serialagent.clearLog",
+        "command": "serialagent-plus.clearLog",
         "title": "Clear Serial Log",
         "category": "Serial Agent Plus"
       },
       {
-        "command": "serialagent.toggleConnection",
+        "command": "serialagent-plus.toggleConnection",
         "title": "Toggle Serial Connection",
         "category": "Serial Agent Plus"
       },
       {
-        "command": "serialagent.toggleBridge",
+        "command": "serialagent-plus.toggleBridge",
         "title": "Toggle MCP Bridge Server",
         "category": "Serial Agent Plus"
       },
       {
-        "command": "serialagent.openInTab",
+        "command": "serialagent-plus.openInTab",
         "title": "Select Serial Monitor...",
         "category": "Serial Agent Plus",
         "icon": "$(circuit-board)"
       },
       {
-        "command": "serialagent.openMonitor1",
+        "command": "serialagent-plus.openMonitor1",
         "title": "Monitor 1",
         "category": "Serial Agent Plus"
       },
       {
-        "command": "serialagent.openMonitor2",
+        "command": "serialagent-plus.openMonitor2",
         "title": "Monitor 2",
         "category": "Serial Agent Plus"
       },
       {
-        "command": "serialagent.openMonitor3",
+        "command": "serialagent-plus.openMonitor3",
         "title": "Monitor 3",
         "category": "Serial Agent Plus"
       },
       {
-        "command": "serialagent.openMonitor4",
+        "command": "serialagent-plus.openMonitor4",
         "title": "Monitor 4",
         "category": "Serial Agent Plus"
       },
       {
-        "command": "serialagent.openMonitor5",
+        "command": "serialagent-plus.openMonitor5",
         "title": "Monitor 5",
         "category": "Serial Agent Plus"
       },
       {
-        "command": "serialagent.openMonitor6",
+        "command": "serialagent-plus.openMonitor6",
         "title": "Monitor 6",
         "category": "Serial Agent Plus"
       },
       {
-        "command": "serialagent.openMonitor7",
+        "command": "serialagent-plus.openMonitor7",
         "title": "Monitor 7",
         "category": "Serial Agent Plus"
       },
       {
-        "command": "serialagent.openMonitor8",
+        "command": "serialagent-plus.openMonitor8",
         "title": "Monitor 8",
         "category": "Serial Agent Plus"
       },
       {
-        "command": "serialagent.openMonitor9",
+        "command": "serialagent-plus.openMonitor9",
         "title": "Monitor 9",
         "category": "Serial Agent Plus"
       },
       {
-        "command": "serialagent.openMonitor10",
+        "command": "serialagent-plus.openMonitor10",
         "title": "Monitor 10",
+        "category": "Serial Agent Plus"
+      },
+      {
+        "command": "serialagent-plus.addMonitor",
+        "title": "Add Serial Monitor",
         "category": "Serial Agent Plus"
       }
     ],
     "configuration": {
       "title": "Serial Agent Plus",
       "properties": {
-        "serialagent.portAutoRefresh": {
+        "serialagent-plus.portAutoRefresh": {
           "type": "boolean",
           "default": true,
           "scope": "machine",
           "markdownDescription": "Automatically refresh the serial port list while the Serial Agent Plus panel is visible."
         },
-        "serialagent.portRefreshIntervalMs": {
+        "serialagent-plus.portRefreshIntervalMs": {
           "type": "number",
           "default": 3000,
           "minimum": 1000,
@@ -160,14 +166,14 @@
           "scope": "machine",
           "markdownDescription": "Polling interval in milliseconds when port auto-refresh is enabled and the panel is visible."
         },
-        "serialagent.portRefreshMetadataIntervalMs": {
+        "serialagent-plus.portRefreshMetadataIntervalMs": {
           "type": "number",
           "default": 30000,
           "minimum": 5000,
           "scope": "machine",
           "markdownDescription": "On Windows, how often to refresh friendly port names via PowerShell. Port add/remove is still detected at the faster polling interval."
         },
-        "serialagent.logBufferKB": {
+        "serialagent-plus.logBufferKB": {
           "type": "number",
           "default": 1024,
           "minimum": 1,
@@ -175,19 +181,31 @@
           "scope": "machine",
           "markdownDescription": "Log buffer cap in KB (total UTF-8 bytes, oldest lines dropped first). Shared by the log view and the extension log buffer used by Save Log / MCP `read_serial_log`."
         },
-        "serialagent.monitorOpenTarget": {
+        "serialagent-plus.monitorOpenTarget": {
           "type": "string",
           "default": "active",
           "enum": ["active", "beside"],
           "scope": "machine",
           "markdownDescription": "Where a Serial Monitor opens in the editor area: `active` reuses the current editor group, `beside` opens a new group to the right."
+        },
+        "serialagent-plus.collapseConfigOnConnect": {
+          "type": "boolean",
+          "default": false,
+          "scope": "window",
+          "markdownDescription": "Collapse the serial Config drawer automatically when a monitor changes from disconnected to connected. Off by default so opening a port never changes your layout."
+        },
+        "serialagent-plus.autoConnectOnStartup": {
+          "type": "boolean",
+          "default": false,
+          "scope": "machine",
+          "markdownDescription": "On startup, automatically open the serial port saved for each monitor. Only ports that are still available are connected; monitors whose device is gone stay disconnected with the saved port cleared. Off by default."
         }
       }
     },
     "keybindings": [],
     "submenus": [
       {
-        "id": "serialagent.openMonitorMenu",
+        "id": "serialagent-plus.openMonitorMenu",
         "label": "Serial Monitor",
         "icon": "$(circuit-board)"
       }
@@ -195,36 +213,36 @@
     "menus": {
       "editor/title": [
         {
-          "submenu": "serialagent.openMonitorMenu",
+          "submenu": "serialagent-plus.openMonitorMenu",
           "group": "navigation",
           "when": "config.workbench.editor.editorActionsLocation != 'titleBar' && config.workbench.editor.showTabs != 'none'"
         }
       ],
-      "serialagent.openMonitorMenu": [
-        { "command": "serialagent.openMonitor1", "when": "serialagent.monitor1", "group": "monitors@1" },
-        { "command": "serialagent.openMonitor2", "when": "serialagent.monitor2", "group": "monitors@2" },
-        { "command": "serialagent.openMonitor3", "when": "serialagent.monitor3", "group": "monitors@3" },
-        { "command": "serialagent.openMonitor4", "when": "serialagent.monitor4", "group": "monitors@4" },
-        { "command": "serialagent.openMonitor5", "when": "serialagent.monitor5", "group": "monitors@5" },
-        { "command": "serialagent.openMonitor6", "when": "serialagent.monitor6", "group": "monitors@6" },
-        { "command": "serialagent.openMonitor7", "when": "serialagent.monitor7", "group": "monitors@7" },
-        { "command": "serialagent.openMonitor8", "when": "serialagent.monitor8", "group": "monitors@8" },
-        { "command": "serialagent.openMonitor9", "when": "serialagent.monitor9", "group": "monitors@9" },
-        { "command": "serialagent.openMonitor10", "when": "serialagent.monitor10", "group": "monitors@10" },
-        { "command": "serialagent.openInTab", "group": "select@1" }
+      "serialagent-plus.openMonitorMenu": [
+        { "command": "serialagent-plus.openMonitor1", "when": "serialagent-plus.monitor1", "group": "monitors@1" },
+        { "command": "serialagent-plus.openMonitor2", "when": "serialagent-plus.monitor2", "group": "monitors@2" },
+        { "command": "serialagent-plus.openMonitor3", "when": "serialagent-plus.monitor3", "group": "monitors@3" },
+        { "command": "serialagent-plus.openMonitor4", "when": "serialagent-plus.monitor4", "group": "monitors@4" },
+        { "command": "serialagent-plus.openMonitor5", "when": "serialagent-plus.monitor5", "group": "monitors@5" },
+        { "command": "serialagent-plus.openMonitor6", "when": "serialagent-plus.monitor6", "group": "monitors@6" },
+        { "command": "serialagent-plus.openMonitor7", "when": "serialagent-plus.monitor7", "group": "monitors@7" },
+        { "command": "serialagent-plus.openMonitor8", "when": "serialagent-plus.monitor8", "group": "monitors@8" },
+        { "command": "serialagent-plus.openMonitor9", "when": "serialagent-plus.monitor9", "group": "monitors@9" },
+        { "command": "serialagent-plus.openMonitor10", "when": "serialagent-plus.monitor10", "group": "monitors@10" },
+        { "command": "serialagent-plus.openInTab", "group": "select@1" }
       ],
       "commandPalette": [
-        { "command": "serialagent.openMonitor1", "when": "false" },
-        { "command": "serialagent.openMonitor2", "when": "false" },
-        { "command": "serialagent.openMonitor3", "when": "false" },
-        { "command": "serialagent.openMonitor4", "when": "false" },
-        { "command": "serialagent.openMonitor5", "when": "false" },
-        { "command": "serialagent.openMonitor6", "when": "false" },
-        { "command": "serialagent.openMonitor7", "when": "false" },
-        { "command": "serialagent.openMonitor8", "when": "false" },
-        { "command": "serialagent.openMonitor9", "when": "false" },
-        { "command": "serialagent.openMonitor10", "when": "false" },
-        { "command": "serialagent.addMonitor", "when": "false" }
+        { "command": "serialagent-plus.openMonitor1", "when": "false" },
+        { "command": "serialagent-plus.openMonitor2", "when": "false" },
+        { "command": "serialagent-plus.openMonitor3", "when": "false" },
+        { "command": "serialagent-plus.openMonitor4", "when": "false" },
+        { "command": "serialagent-plus.openMonitor5", "when": "false" },
+        { "command": "serialagent-plus.openMonitor6", "when": "false" },
+        { "command": "serialagent-plus.openMonitor7", "when": "false" },
+        { "command": "serialagent-plus.openMonitor8", "when": "false" },
+        { "command": "serialagent-plus.openMonitor9", "when": "false" },
+        { "command": "serialagent-plus.openMonitor10", "when": "false" },
+        { "command": "serialagent-plus.addMonitor", "when": "false" }
       ]
     }
   },

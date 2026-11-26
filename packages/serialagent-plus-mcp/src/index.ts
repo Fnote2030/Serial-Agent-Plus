@@ -197,9 +197,12 @@ async function toolBridgeRequest(
 // MCP Server
 // ============================================================
 
+// 版本号直接取 package.json：dist 与包根同级，打包/发版只需改一处，避免 serverInfo 与包版本漂移
+const packageVersion = (require('../package.json') as { version: string }).version;
+
 const server = new McpServer({
   name: 'serialagent-plus-mcp',
-  version: '1.0.1',
+  version: packageVersion,
 });
 
 export function registerTools(

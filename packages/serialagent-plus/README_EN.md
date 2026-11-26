@@ -63,8 +63,9 @@ If your goal is "AI participates in the real debugging loop", you need the next 
 - Tab bar manages monitors: `+` on the Serial Monitor header row to add (disabled at 10), per-tab `×` to delete (silently disconnects; hidden when only one remains), double-click a tab to rename (uniqueness enforced); the header row shows `index=name` like the tabs (the index is fixed) and double-clicking it renames too — the new name syncs to tabs, header rows and editor panel titles
 - Index and default title are both smallest-free allocated (shown as `1=Serial Monitor1`); renaming keeps the index prefix and the index never changes
 - Each monitor owns its serial config, log buffer, send history, and terminal session; a port already opened by another monitor is rejected with the owner named
+- Connection settings (port / baud rate / frame / flow control) persist per monitor: after a reload the port dropdown still points at the device used last time; if that device is gone the port is cleared with a `[WARN]` log line (baud and other preferences stay, so you only pick the new device). Auto-connecting on startup is controlled by `serialagent-plus.autoConnectOnStartup` (off by default)
 - The sidebar tabs and editor-area panels are two viewports of the same monitors: log/terminal snapshots, send draft/history, display/send/view options, serial config form, quick commands and `Cycle` state all sync in real time; the periodic timer runs once in the extension host, so two open viewports still send only once per tick
-- The circuit-board icon (`Serial Monitor`) on the editor tab bar opens a dropdown right below the button listing every monitor by index (`Monitor 1`…); picking one opens it in the editor area. The trailing `Select Serial Monitor...` entry lists monitors with their names and connection state (contributed menu labels are static in VS Code, so they cannot follow renames or connection changes — the detailed view lives there). Inside the sidebar the monitor title-row button opens the current monitor directly (hidden inside editor-area panels); placement follows `serialagent.monitorOpenTarget` (`active` current group / `beside` new group to the right)
+- The circuit-board icon (`Serial Monitor`) on the editor tab bar opens a dropdown right below the button listing every monitor by index (`Monitor 1`…); picking one opens it in the editor area. The trailing `Select Serial Monitor...` entry lists monitors with their names and connection state (contributed menu labels are static in VS Code, so they cannot follow renames or connection changes — the detailed view lives there). Inside the sidebar the monitor title-row button opens the current monitor directly (hidden inside editor-area panels); placement follows `serialagent-plus.monitorOpenTarget` (`active` current group / `beside` new group to the right)
 
 ### Serial workspace
 
@@ -72,9 +73,11 @@ If your goal is "AI participates in the real debugging loop", you need the next 
 - Inspect RX logs and send TX commands in the same view; the log toolbar provides search filtering, `Freeze`, `Copy`, `Save` and one-click clear, while the monitor status bar shows live RX/TX byte counters
 - Display options: `Time` per-line timestamps, `HEX Recv` hex receive view, `Echo` echo of sent data, `Auto Scroll` follow the newest line, `Wrap` hex idle-gap threshold, and `Encoding` switching (`UTF-8` / `GBK`, handy for firmware printing Chinese)
 - The send area supports `Hex` sending, an `End` line ending (None/LF/CRLF/CR), a send-history dropdown (pick to reuse, delete a single entry) and `Cycle` periodic sending (configurable ms interval, off by default; the timer runs once in the extension host and is shared by all viewports)
+- Echo lines are `[time] TX>> data` (timestamp first, identical for manual send, quick commands and `Cycle`); HEX sends are labelled `[time] TX HEX>> 11 22 33` (bytes normalised to uppercase two-character groups) and are hidden when `Echo` is off. MCP sends echo as `MCP TX>> …` / `MCP TX HEX>> …`
 - HEX display idle-gap wrap: a hex line is committed once the inter-byte gap exceeds the `Wrap` option (default 20ms, minimum 1ms) instead of breaking per serial chunk; text display still wraps on CR/LF only — data without CR/LF (prompt/echo) stays on the live line
-- `Ctrl+C`: copies selected log text when there is a selection, and only sends ETX to the device when nothing is selected
-- Configurable log buffer cap via the VS Code setting `serialagent.logBufferKB` (KB, default 1024=1MB, max 10240=10MB): limits total UTF-8 bytes, dropping the oldest lines first; the log view and the extension log buffer (Save/MCP readback) share this one setting. Unterminated lines are additionally guarded by a 1MB RX byte buffer
+- `Ctrl+C`: copies selected log text when there is a selection, and only sends ETX to the device when nothing is selected; releasing a selection never jumps the view back to the last line (AutoScroll only follows new data)
+- `Clear` resets committed lines, RX/TX counters and the terminal live line, so un-terminated RX (hex bytes received in text mode) does not stay on screen
+- Configurable log buffer cap via the VS Code setting `serialagent-plus.logBufferKB` (KB, default 1024=1MB, max 10240=10MB): limits total UTF-8 bytes, dropping the oldest lines first; the log view and the extension log buffer (Save/MCP readback) share this one setting. Unterminated lines are additionally guarded by a 1MB RX byte buffer
 - `Save` exports the active monitor log: the default file name is `serial-agent-plus-<monitor>-<YYYYMMDDHHmmss>.log` (spaces and illegal characters become `-`, default directory is the workspace root) and the file starts with a serial-info header (monitor, connection state, port, baud rate, frame, flow control, encoding, RX/TX byte counts, export time, line count) followed by `# ===== log data =====` and the log body
 - `Freeze` stops the log view entirely: data keeps accumulating in the background while the view stays frozen (handy for reading/copying a fixed snapshot — a text selection is never wiped by incoming logs); `Resume` refreshes it once. While text is selected the view also pauses rebuilding so `Ctrl+C` can copy
 - The log panel is a direct terminal: click it and printable keys go into a local input line rendered inline with the live device prompt (e.g. `msh > ls▌`; falls back to a `>` prefix when there is no live line — no separate input row); `Enter` sends the whole line plus CR to the device, while `Tab`/`↑`/`↓`/arrow/Home/End/Del keys **pass through immediately** as byte sequences (ESC[A/B etc.); paste via `Ctrl+V` / the context menu works in this input line (the extension reads the clipboard; tabs become spaces, control characters are dropped, 4096 chars per paste; single-line pastes only fill the line, multi-line pastes submit line by line like typing + Enter); `Ctrl+C` copies the selected log text when there is a selection, and only clears the line and sends ETX when nothing is selected; sending while disconnected connects with the current config first. `↑/↓` history recall and `Tab` completion sync the device redraw back into the local input line — at that point the device edit buffer already holds the line, so Enter only sends CR (if you edited the line locally, it first backspace-clears the device line and resends), preventing the device from appending the command into `lsls`
@@ -101,24 +104,6 @@ The image below is the serial panel itself. It can be used as a daily serial too
 
 If you want the AI closed loop later, this Bridge is the key middle layer.  
 It is not a normal webpage for direct browser use. It is a local API runtime with authentication.
-
-The following images correspond to Bridge-related learning scenarios:
-
-- first image: the local discovery file `bridge.json`
-- second image: the auth prompt when opening a Bridge endpoint directly in a browser
-- third image: API testing with a token
-
-<p align="left">
-  <img src="./image/README/bridge-discovery-file.png" alt="Bridge discovery file" width="420" />
-</p>
-
-<p align="left">
-  <img src="./image/README/bridge-auth-required.png" alt="Bridge auth required" width="420" />
-</p>
-
-<p align="left">
-  <img src="./image/README/bridge-api-testing.png" alt="Bridge API testing" width="420" />
-</p>
 
 The status bar also has two permanent entries: `$(plug) Serial <connected>/<total>` (click to focus the panel) and `$(broadcast) SA Bridge Ready` / `$(circle-slash) SA Bridge Off` (click to start or stop the Bridge).
 
@@ -347,11 +332,13 @@ They are simply two viewports of the same monitor: log and terminal state, send 
 
 | Setting | Default | Description |
 | --- | --- | --- |
-| `serialagent.portAutoRefresh` | `true` | Refresh the port list automatically while the panel is visible |
-| `serialagent.portRefreshIntervalMs` | `3000` | Polling interval for auto refresh (1000–30000 ms) |
-| `serialagent.portRefreshMetadataIntervalMs` | `30000` | How often friendly port names refresh on Windows (≥5000 ms) |
-| `serialagent.logBufferKB` | `1024` | Log buffer cap in KB (max 10240), shared by the log view and Save/MCP readback |
-| `serialagent.monitorOpenTarget` | `active` | Where a monitor opens in the editor area: `active` current group / `beside` new group to the right |
+| `serialagent-plus.portAutoRefresh` | `true` | Refresh the port list automatically while the panel is visible |
+| `serialagent-plus.portRefreshIntervalMs` | `3000` | Polling interval for auto refresh (1000–30000 ms) |
+| `serialagent-plus.portRefreshMetadataIntervalMs` | `30000` | How often friendly port names refresh on Windows (≥5000 ms) |
+| `serialagent-plus.logBufferKB` | `1024` | Log buffer cap in KB (max 10240), shared by the log view and Save/MCP readback |
+| `serialagent-plus.monitorOpenTarget` | `active` | Where a monitor opens in the editor area: `active` current group / `beside` new group to the right |
+| `serialagent-plus.collapseConfigOnConnect` | `false` | Collapse the Config drawer automatically when a monitor goes from disconnected to connected; off by default so opening a port never changes your layout |
+| `serialagent-plus.autoConnectOnStartup` | `false` | On startup, reconnect every monitor to the port it used last time; monitors whose device is gone stay disconnected and their port is cleared. Off by default |
 
 ## More Documentation
 

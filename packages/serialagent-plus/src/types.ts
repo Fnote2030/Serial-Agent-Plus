@@ -88,8 +88,8 @@ export interface ISerialManager {
   /** 注入一行日志到缓冲区（用于 Bridge API Echo 等场景） */
   injectLog(line: string): void;
 
-  /** 注入 TX 回显日志（MCP 发送），showTimestamp 开启时为每行添加时间戳前缀 */
-  injectTxLog(data: string): void;
+  /** 注入 TX 回显日志（MCP 发送），showTimestamp 开启时日志缓冲每行带时间戳前缀（webview 通道保持原始行） */
+  injectTxLog(data: string, hexMode?: boolean): void;
 
   /** 订阅新日志行（增量监听，用于 wait_for_output） */
   onNewLog(callback: (line: string) => void): void;
