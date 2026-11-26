@@ -9,10 +9,22 @@
  */
 
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
+import * as fs from 'fs';
 import * as http from 'http';
-import { BridgeServer } from '../packages/serialagent-vscode/src/bridge-server';
+import * as os from 'os';
+import * as path from 'path';
+import { BridgeServer } from '../packages/serialagent-plus/src/bridge-server';
 import { MockSerialManager } from './mocks/mock-serial-manager';
-import { CustomCommandTaskResult, ILogger, IKeilApi, KeilConfigCheckResult, KeilTaskResult } from '../packages/serialagent-vscode/src/types';
+import { ILogger } from '../packages/serialagent-plus/src/types';
+
+/**
+ * 测试专用发现文件目录：BridgeServer.start() 会写服务发现文件，
+ * 默认路径是用户真实运行时使用的 ~/.serialagent-plus，测试必须隔离，
+ * 否则会覆盖/删除正在运行的扩展实例的 bridge.json。
+ */
+function createTempBridgeDir(): string {
+  return fs.mkdtempSync(path.join(os.tmpdir(), 'serialagent-bridge-test-'));
+}
 
 // ---- 测试工具 ----
 
@@ -20,59 +32,6 @@ import { CustomCommandTaskResult, ILogger, IKeilApi, KeilConfigCheckResult, Keil
 class SilentLogger implements ILogger {
   readonly lines: string[] = [];
   appendLine(value: string): void { this.lines.push(value); }
-}
-
-class FakeKeilApi implements IKeilApi {
-  busy = false;
-  checkConfigError: Error | null = null;
-  buildError: Error | null = null;
-  flashError: Error | null = null;
-  buildAndFlashError: Error | null = null;
-  customError: Error | null = null;
-  customResult: CustomCommandTaskResult = {
-    success: true,
-    preview: 'python3 tools/flash.py',
-    cwd: 'D:/workspace',
-    exitCode: 0,
-  };
-  configReport: KeilConfigCheckResult = {
-    ready: true,
-    checks: [{ key: 'uv4Path', ok: true, message: 'ok' }],
-    projectFile: 'D:/_KeilProject/demo.uvprojx',
-    target: 'Target 1',
-  };
-  buildResult: KeilTaskResult = {
-    success: true,
-    flasher: 'jlink',
-    projectFile: 'D:/_KeilProject/demo.uvprojx',
-    artifactPath: 'D:/_KeilProject/Objects/demo.hex',
-    target: 'Target 1',
-  };
-
-  isBusy(): boolean { return this.busy; }
-  async checkConfig(): Promise<KeilConfigCheckResult> {
-    if (this.checkConfigError) { throw this.checkConfigError; }
-    return this.configReport;
-  }
-  async build(): Promise<KeilTaskResult> {
-    if (this.buildError) { throw this.buildError; }
-    return this.buildResult;
-  }
-  async flash(artifactPath?: string): Promise<KeilTaskResult> {
-    if (this.flashError) { throw this.flashError; }
-    if (artifactPath) {
-      return { ...this.buildResult, artifactPath };
-    }
-    return this.buildResult;
-  }
-  async buildAndFlash(): Promise<KeilTaskResult> {
-    if (this.buildAndFlashError) { throw this.buildAndFlashError; }
-    return this.buildResult;
-  }
-  async runCustomCommand(): Promise<CustomCommandTaskResult> {
-    if (this.customError) { throw this.customError; }
-    return this.customResult;
-  }
 }
 
 /** 发送 HTTP 请求并返回解析后的响应 */
@@ -149,6 +108,39 @@ function rawHttpRequest(
 
 // ---- 测试套件 ----
 
+/** 单监视器 BridgeHost 适配器：把 MockSerialManager 包成 host（bridge 按监视器路由） */
+class SingleMonitorHost {
+  readonly id = 'm1';
+  readonly index = 1;
+  readonly name = 'Serial Monitor1';
+  constructor(private readonly sm: MockSerialManager) {}
+  list() {
+    return [{
+      id: this.id, index: this.index, name: this.name,
+      connected: this.sm.isConnected, port: this.sm.currentPath, baudRate: this.sm.currentBaudRate,
+    }];
+  }
+  runtimeByRef(ref: number | string) {
+    const key = String(ref).toLowerCase();
+    if (key === '1' || key === this.name.toLowerCase()) { return this.primary(); }
+    return undefined;
+  }
+  primary() {
+    return { meta: { id: this.id, index: this.index, name: this.name, config: this.sm.config }, manager: this.sm };
+  }
+  createMonitor(): never { throw new Error('Monitor limit reached (10)'); }
+  deleteMonitor(): never { throw new Error('At least one monitor must remain'); }
+  renameMonitor(): never { throw new Error('Rename not supported by stub'); }
+  updateMonitorConfig(_id: string, partial: Partial<typeof MockSerialManager.prototype.config>) {
+    this.sm.updateSettings(partial as never);
+    return this.sm.config;
+  }
+  async connect(_id: string, config: Parameters<MockSerialManager['connect']>[0]) {
+    const ok = await this.sm.connect(config);
+    return ok ? { ok: true } : { ok: false, error: 'Failed to connect' };
+  }
+}
+
 describe('Bridge Server API', () => {
   let mock: MockSerialManager;
   let logger: SilentLogger;
@@ -164,7 +156,7 @@ describe('Bridge Server API', () => {
   beforeAll(async () => {
     mock = new MockSerialManager();
     logger = new SilentLogger();
-    bridge = new BridgeServer(mock, logger);
+    bridge = new BridgeServer(new SingleMonitorHost(mock) as never, logger, true, '0.0.0', createTempBridgeDir());
     await bridge.start();
     port = bridge.port;
     token = bridge.token;
@@ -574,6 +566,18 @@ describe('Bridge Server API', () => {
       expect(logRes.data.lines).toContain('Firmware v1.0.0');
     });
 
+    it('HEX 发送的回显标注为 MCP TX HEX>> 并规范化字节', async () => {
+      mock.setMockPorts([{ path: 'COM3' }]);
+      await mock.connect({ port: 'COM3', baudRate: 115200, dataBits: 8, parity: 'none', stopBits: 1, lineEnding: 'lf', showTimestamp: false, hexMode: false });
+
+      const res = await authRequest('POST', '/api/send', { data: '112233', hexMode: true });
+      expect(res.status).toBe(200);
+
+      const logRes = await authRequest('GET', '/api/log');
+      expect(logRes.data.lines).toContain('MCP TX HEX>> 11 22 33');
+      expect(logRes.data.lines).not.toContain('MCP TX>> 112233');
+    });
+
     it('并发 send-and-wait 请求应各自匹配到对应响应', async () => {
       mock.setMockPorts([{ path: 'COM3' }]);
       await mock.connect({ port: 'COM3', baudRate: 115200, dataBits: 8, parity: 'none', stopBits: 1, lineEnding: 'lf', showTimestamp: false, hexMode: false });
@@ -648,6 +652,8 @@ describe('Bridge Server API', () => {
       expect(res.headers['access-control-allow-origin']).toBe('http://localhost:3000');
       expect(String(res.headers['access-control-allow-methods'])).toContain('GET');
       expect(String(res.headers['access-control-allow-methods'])).toContain('POST');
+      // DELETE 端点（/api/monitors/{ref}）必须在预检里声明，否则浏览器会拦截
+      expect(String(res.headers['access-control-allow-methods'])).toContain('DELETE');
       expect(String(res.headers['access-control-allow-headers'])).toContain('Authorization');
     });
 
@@ -659,6 +665,18 @@ describe('Bridge Server API', () => {
       expect(res.headers['access-control-allow-origin']).toBeUndefined();
       expect(String(res.headers['access-control-allow-methods'])).toContain('GET');
       expect(String(res.headers['access-control-allow-headers'])).toContain('Authorization');
+    });
+
+    it('失败请求的响应错误码写入 Bridge 日志（便于排查浏览器/脚本调用）', async () => {
+      logger.lines.length = 0;
+      const res = await httpRequest(port, 'POST', '/api/send', { monitor: '1' }, {
+        'Authorization': `Bearer ${token}`,
+      });
+      expect(res.status).toBe(400);
+      expect(res.data.error.code).toBe('MISSING_REQUIRED_FIELD');
+      expect(logger.lines.some((line) => (
+        line.includes('400') && line.includes('MISSING_REQUIRED_FIELD') && line.includes('POST /api/send')
+      ))).toBe(true);
     });
 
     it('非法 JSON body 应返回 400 且包含统一错误信息', async () => {
@@ -679,99 +697,196 @@ describe('Bridge Server API', () => {
       expect(parsed.error.message).toContain('Invalid JSON body');
     });
   });
+});
 
-  describe('Keil API 状态码与错误码', () => {
-    it('Keil API 未初始化应返回 501 + 统一错误格式', async () => {
-      const res = await authRequest('GET', '/api/keil/config-check');
-      expect(res.status).toBe(501);
-      expect(res.data.success).toBe(false);
-      expect(res.data.error.code).toBe('KEIL_API_UNAVAILABLE');
-      expect(res.data.error.message).toContain('not initialized');
-    });
+// ======== 多监视器管理 (P3) ========
 
-    it('Keil busy 场景应返回 409 + KEIL_TASK_BUSY', async () => {
-      const keilApi = new FakeKeilApi();
-      keilApi.busy = true;
-      bridge.setKeilApi(keilApi);
+/** 可编程假宿主：内存态增删改名，manager 复用同一个 Mock */
+class FakeHost {
+  private seq = 0;
+  private monitors = new Map<string, { id: string; index: number; name: string }>();
+  constructor(private readonly sm: MockSerialManager) {
+    this.monitors.set('m1', { id: 'm1', index: 1, name: 'Serial Monitor1' });
+  }
+  private sorted() { return [...this.monitors.values()].sort((a, b) => a.index - b.index); }
+  list() {
+    return this.sorted().map((m) => ({
+      id: m.id, index: m.index, name: m.name,
+      connected: this.sm.isConnected, port: this.sm.currentPath, baudRate: this.sm.currentBaudRate,
+    }));
+  }
+  runtimeByRef(ref: number | string) {
+    const key = String(ref).toLowerCase();
+    const found = this.sorted().find((m) => String(m.index) === key || m.name.toLowerCase() === key);
+    if (!found) { return undefined; }
+    return { meta: { ...found, config: this.sm.config }, manager: this.sm };
+  }
+  primary() { return this.runtimeByRef(1)!; }
+  createMonitor(name?: string) {
+    if (this.monitors.size >= 10) { throw new Error('Monitor limit reached (10)'); }
+    const usedIndexes = new Set(this.sorted().map((m) => m.index));
+    const usedNames = new Set(this.sorted().map((m) => m.name.toLowerCase()));
+    let index = 1; while (usedIndexes.has(index)) { index++; }
+    let finalName = (name ?? '').trim() || `Serial Monitor${(() => { let i = 1; while (usedNames.has(`serial monitor${i}`)) { i++; } return i; })()}`;
+    if (usedNames.has(finalName.toLowerCase())) { throw new Error(`Name already in use: ${finalName}`); }
+    const id = `m${++this.seq + 1}`;
+    const created = { id, index, name: finalName };
+    this.monitors.set(id, created);
+    return created;
+  }
+  deleteMonitor(id: string) {
+    if (this.monitors.size <= 1) { throw new Error('At least one monitor must remain'); }
+    if (!this.monitors.has(id)) { throw new Error(`Monitor not found: ${id}`); }
+    this.monitors.delete(id);
+  }
+  renameMonitor(id: string, name: string) {
+    const m = this.monitors.get(id);
+    if (!m) { throw new Error(`Monitor not found: ${id}`); }
+    const taken = this.sorted().some((o) => o.id !== id && o.name.toLowerCase() === name.toLowerCase());
+    if (taken) { throw new Error(`Name already in use: ${name}`); }
+    m.name = name;
+    return { ...m };
+  }
+  updateMonitorConfig(_id: string, partial: Partial<MockSerialManager['config']>) {
+    this.sm.updateSettings(partial as never);
+    return this.sm.config;
+  }
+  async connect(_id: string, config: Parameters<MockSerialManager['connect']>[0]) {
+    const ok = await this.sm.connect(config);
+    return ok ? { ok: true } : { ok: false, error: 'Failed to connect' };
+  }
+}
 
-      const res = await authRequest('POST', '/api/keil/build');
-      expect(res.status).toBe(409);
-      expect(res.data.success).toBe(false);
-      expect(res.data.error.code).toBe('KEIL_TASK_BUSY');
-      expect(res.data.error.details.stage).toBe('build');
-    });
+describe('Bridge Server multi-monitor management (P3)', () => {
+  let bridge2: BridgeServer;
+  let port2: number;
+  let token2: string;
+  let host: FakeHost;
 
-    it('Keil build 成功应返回 200 + success/data', async () => {
-      const keilApi = new FakeKeilApi();
-      bridge.setKeilApi(keilApi);
+  function req(method: string, path: string, body?: object) {
+    return httpRequest(port2, method, path, body, { 'Authorization': `Bearer ${token2}` });
+  }
 
-      const res = await authRequest('POST', '/api/keil/build');
-      expect(res.status).toBe(200);
-      expect(res.data.success).toBe(true);
-      expect(res.data.data.stage).toBe('build');
-      expect(res.data.data.buildOk).toBe(true);
-      expect(res.data.data.flasher).toBe('jlink');
-      expect(res.data.data.artifactPath).toContain('.hex');
-    });
+  beforeAll(async () => {
+    host = new FakeHost(new MockSerialManager());
+    bridge2 = new BridgeServer(host as never, new SilentLogger(), true, '0.0.0', createTempBridgeDir());
+    await bridge2.start();
+    port2 = bridge2.port;
+    token2 = bridge2.token;
+  });
+  afterAll(async () => { await bridge2.stop(); });
 
-    it('Keil config-check 配置缺失应返回 400 + KEIL_CONFIG_INVALID', async () => {
-      const keilApi = new FakeKeilApi();
-      keilApi.checkConfigError = new Error('Cannot find UV4 executable');
-      bridge.setKeilApi(keilApi);
+  it('M1: lists monitors with labels and config', async () => {
+    const res = await req('GET', '/api/monitors');
+    expect(res.status).toBe(200);
+    expect(res.data.count).toBe(1);
+    expect(res.data.monitors[0].label).toBe('1=Serial Monitor1');
+    expect(res.data.monitors[0].config).toBeTruthy();
+  });
 
-      const res = await authRequest('GET', '/api/keil/config-check');
-      expect(res.status).toBe(400);
-      expect(res.data.success).toBe(false);
-      expect(res.data.error.code).toBe('KEIL_CONFIG_INVALID');
-      expect(res.data.error.details.stage).toBe('config-check');
-    });
+  it('M2: create assigns smallest free index/name and they are addressable', async () => {
+    const res = await req('POST', '/api/monitors', { name: 'RTT' });
+    expect(res.status).toBe(201);
+    expect(res.data.monitor.index).toBe(2);
+    expect(res.data.monitor.name).toBe('RTT');
 
-    it('Keil flash 执行失败应返回 500 + KEIL_FLASH_FAILED', async () => {
-      const keilApi = new FakeKeilApi();
-      keilApi.flashError = new Error('JLink failed unexpectedly');
-      bridge.setKeilApi(keilApi);
+    // 多监视器存在时缺省 target 报错并列出候选
+    const err = await req('GET', '/api/status');
+    expect(err.status).toBe(400);
+    expect(err.data.error.code).toBe('MONITOR_REQUIRED');
+    expect(err.data.error.details.monitors).toContain('2=RTT');
 
-      const res = await authRequest('POST', '/api/keil/flash', { artifactPath: 'D:/tmp/demo.hex' });
-      expect(res.status).toBe(500);
-      expect(res.data.success).toBe(false);
-      expect(res.data.error.code).toBe('KEIL_FLASH_FAILED');
-      expect(res.data.error.details.stage).toBe('flash');
-    });
+    // 按 name 路由
+    const byName = await req('GET', '/api/status?monitor=RTT');
+    expect(byName.status).toBe(200);
+    expect(byName.data.monitor).toBe('2=RTT');
 
-    it('Keil build-and-flash 成功应返回 200 + buildOk/flashOk', async () => {
-      const keilApi = new FakeKeilApi();
-      bridge.setKeilApi(keilApi);
+    // 按 index 路由
+    const byIndex = await req('GET', '/api/log?monitor=2&lines=5');
+    expect(byIndex.status).toBe(200);
+    expect(byIndex.data.monitor).toBe('2=RTT');
 
-      const res = await authRequest('POST', '/api/keil/build-and-flash');
-      expect(res.status).toBe(200);
-      expect(res.data.success).toBe(true);
-      expect(res.data.data.stage).toBe('build-and-flash');
-      expect(res.data.data.buildOk).toBe(true);
-      expect(res.data.data.flashOk).toBe(true);
-      expect(res.data.data.flasher).toBe('jlink');
-    });
+    // 未知引用
+    const missing = await req('GET', '/api/status?monitor=9');
+    expect(missing.status).toBe(404);
+    expect(missing.data.error.code).toBe('MONITOR_NOT_FOUND');
+  });
 
-    it('Custom command 成功应返回 200 + customOk', async () => {
-      const keilApi = new FakeKeilApi();
-      bridge.setKeilApi(keilApi);
+  it('M3: rename enforces uniqueness', async () => {
+    const ok = await req('POST', '/api/monitors/RTT/rename', { name: 'Debug UART' });
+    expect(ok.status).toBe(200);
+    expect(ok.data.label).toBe('2=Debug UART');
 
-      const res = await authRequest('POST', '/api/custom/run');
-      expect(res.status).toBe(200);
-      expect(res.data.success).toBe(true);
-      expect(res.data.data.stage).toBe('custom');
-      expect(res.data.data.customOk).toBe(true);
-      expect(res.data.data.preview).toBe('python3 tools/flash.py');
-    });
+    const dup = await req('POST', '/api/monitors/1/rename', { name: 'debug uart' });
+    expect(dup.status).toBe(400);
+  });
 
-    it('Custom command 失败应返回 CUSTOM_COMMAND_FAILED', async () => {
-      const keilApi = new FakeKeilApi();
-      keilApi.customError = new Error('Custom command failed with exit code 7');
-      bridge.setKeilApi(keilApi);
+  it('M3b: path refs are percent-decoded before name resolution', async () => {
+    // MCP 客户端总是 encodeURIComponent 监视器名："Debug UART" → "Debug%20UART"
+    const get = await req('GET', '/api/monitors/Debug%20UART/config');
+    expect(get.status).toBe(200);
+    expect(get.data.monitor).toBe('2=Debug UART');
 
-      const res = await authRequest('POST', '/api/custom/run');
-      expect(res.status).toBe(500);
-      expect(res.data.success).toBe(false);
-      expect(res.data.error.code).toBe('CUSTOM_COMMAND_FAILED');
-    });
+    const renamed = await req('POST', '/api/monitors/Debug%20UART/rename', { name: 'RTT' });
+    expect(renamed.status).toBe(200);
+    expect(renamed.data.label).toBe('2=RTT');
+  });
+
+  it('M4: config get/set updates display settings', async () => {
+    const set = await req('POST', '/api/monitors/2/config', { showTimestamp: true, rxIdleWrapMs: 50 });
+    expect(set.status).toBe(200);
+    expect(set.data.config.showTimestamp).toBe(true);
+
+    const get = await req('GET', '/api/monitors/2/config');
+    expect(get.data.config.rxIdleWrapMs).toBe(50);
+  });
+
+  it('M5: delete removes the monitor; last one cannot be deleted', async () => {
+    const del = await req('DELETE', '/api/monitors/2');
+    expect(del.status).toBe(200);
+
+    const last = await req('DELETE', '/api/monitors/1');
+    expect(last.status).toBe(409);
+    expect(last.data.error.code).toBe('MONITOR_MINIMUM');
+  });
+});
+
+describe('Bridge discovery file isolation', () => {
+  it('writes the discovery file into the configured directory', async () => {
+    const dir = createTempBridgeDir();
+    const bridge = new BridgeServer(new SingleMonitorHost(new MockSerialManager()) as never, new SilentLogger(), true, '0.0.0', dir);
+    await bridge.start();
+    try {
+      const filePath = path.join(dir, 'bridge.json');
+      expect(fs.existsSync(filePath)).toBe(true);
+      const written = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+      expect(written.port).toBe(bridge.port);
+      expect(written.instanceId).toBeTruthy();
+    } finally {
+      await bridge.stop();
+    }
+  });
+
+  it('does not delete a discovery file overwritten by another instance', async () => {
+    const dir = createTempBridgeDir();
+    const filePath = path.join(dir, 'bridge.json');
+    const bridge = new BridgeServer(new SingleMonitorHost(new MockSerialManager()) as never, new SilentLogger(), true, '0.0.0', dir);
+    await bridge.start();
+
+    // 另一实例（多窗口/真实扩展）覆盖了发现文件：本实例停止时不能删除
+    fs.writeFileSync(filePath, JSON.stringify({ instanceId: 'other-instance', pid: 4242, port: 1, token: 'x' }));
+    await bridge.stop();
+    expect(fs.existsSync(filePath)).toBe(true);
+  });
+
+  it('removes its own discovery file on stop', async () => {
+    const dir = createTempBridgeDir();
+    const filePath = path.join(dir, 'bridge.json');
+    const bridge = new BridgeServer(new SingleMonitorHost(new MockSerialManager()) as never, new SilentLogger(), true, '0.0.0', dir);
+    await bridge.start();
+    expect(fs.existsSync(filePath)).toBe(true);
+
+    await bridge.stop();
+    expect(fs.existsSync(filePath)).toBe(false);
   });
 });

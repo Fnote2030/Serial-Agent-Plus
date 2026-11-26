@@ -1,0 +1,11 @@
+{
+  "name": "@fnote2030/serialagent-plus-skill",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Serial Agent Plus skill source and prompt assets for AI clients (unofficial fork of Rance-OwO/Serial-Agent)",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Fnote2030/Serial-Agent-Plus"
+  },
+  "license": "MIT"
+}

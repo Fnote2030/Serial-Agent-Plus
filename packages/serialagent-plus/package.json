@@ -1,0 +1,280 @@
+{
+  "name": "serialagent-plus",
+  "displayName": "Serial Agent Plus",
+  "description": "Serial monitor and MCP bridge for embedded debugging in VS Code. Unofficial fork of Rance-OwO/Serial-Agent focused on enhanced serial features.",
+  "version": "1.0.0",
+  "publisher": "Fnote2030",
+  "author": "Fnote2030",
+  "license": "MIT",
+  "icon": "media/SerialAgentPlus.png",
+  "homepage": "https://github.com/Fnote2030/Serial-Agent-Plus",
+  "bugs": {
+    "url": "https://github.com/Fnote2030/Serial-Agent-Plus/issues"
+  },
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "keywords": [
+    "serial",
+    "uart",
+    "embedded",
+    "stm32",
+    "mcp",
+    "debug",
+    "monitor"
+  ],
+  "categories": [
+    "Debuggers",
+    "Other"
+  ],
+  "qna": false,
+  "extensionKind": [
+    "ui"
+  ],
+  "capabilities": {
+    "virtualWorkspaces": false,
+    "untrustedWorkspaces": {
+      "supported": false
+    }
+  },
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "serialagent-plus",
+          "title": "Serial Agent Plus",
+          "icon": "media/SerialAgentPlus_icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "serialagent-plus": [
+        {
+          "type": "webview",
+          "id": "serialagent-plus.serialPanel",
+          "name": "Serial Monitor"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "serialagent-plus.refreshPorts",
+        "title": "Refresh Serial Ports",
+        "category": "Serial Agent Plus",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "serialagent-plus.disconnect",
+        "title": "Disconnect Serial Port",
+        "category": "Serial Agent Plus"
+      },
+      {
+        "command": "serialagent-plus.clearLog",
+        "title": "Clear Serial Log",
+        "category": "Serial Agent Plus"
+      },
+      {
+        "command": "serialagent-plus.toggleConnection",
+        "title": "Toggle Serial Connection",
+        "category": "Serial Agent Plus"
+      },
+      {
+        "command": "serialagent-plus.toggleBridge",
+        "title": "Toggle MCP Bridge Server",
+        "category": "Serial Agent Plus"
+      },
+      {
+        "command": "serialagent-plus.openInTab",
+        "title": "Select Serial Monitor...",
+        "category": "Serial Agent Plus",
+        "icon": "$(circuit-board)"
+      },
+      {
+        "command": "serialagent-plus.openMonitor1",
+        "title": "Monitor 1",
+        "category": "Serial Agent Plus"
+      },
+      {
+        "command": "serialagent-plus.openMonitor2",
+        "title": "Monitor 2",
+        "category": "Serial Agent Plus"
+      },
+      {
+        "command": "serialagent-plus.openMonitor3",
+        "title": "Monitor 3",
+        "category": "Serial Agent Plus"
+      },
+      {
+        "command": "serialagent-plus.openMonitor4",
+        "title": "Monitor 4",
+        "category": "Serial Agent Plus"
+      },
+      {
+        "command": "serialagent-plus.openMonitor5",
+        "title": "Monitor 5",
+        "category": "Serial Agent Plus"
+      },
+      {
+        "command": "serialagent-plus.openMonitor6",
+        "title": "Monitor 6",
+        "category": "Serial Agent Plus"
+      },
+      {
+        "command": "serialagent-plus.openMonitor7",
+        "title": "Monitor 7",
+        "category": "Serial Agent Plus"
+      },
+      {
+        "command": "serialagent-plus.openMonitor8",
+        "title": "Monitor 8",
+        "category": "Serial Agent Plus"
+      },
+      {
+        "command": "serialagent-plus.openMonitor9",
+        "title": "Monitor 9",
+        "category": "Serial Agent Plus"
+      },
+      {
+        "command": "serialagent-plus.openMonitor10",
+        "title": "Monitor 10",
+        "category": "Serial Agent Plus"
+      },
+      {
+        "command": "serialagent-plus.addMonitor",
+        "title": "Add Serial Monitor",
+        "category": "Serial Agent Plus"
+      }
+    ],
+    "configuration": {
+      "title": "Serial Agent Plus",
+      "properties": {
+        "serialagent-plus.portAutoRefresh": {
+          "type": "boolean",
+          "default": true,
+          "scope": "machine",
+          "markdownDescription": "Automatically refresh the serial port list while the Serial Agent Plus panel is visible."
+        },
+        "serialagent-plus.portRefreshIntervalMs": {
+          "type": "number",
+          "default": 3000,
+          "minimum": 1000,
+          "maximum": 30000,
+          "scope": "machine",
+          "markdownDescription": "Polling interval in milliseconds when port auto-refresh is enabled and the panel is visible."
+        },
+        "serialagent-plus.portRefreshMetadataIntervalMs": {
+          "type": "number",
+          "default": 30000,
+          "minimum": 5000,
+          "scope": "machine",
+          "markdownDescription": "On Windows, how often to refresh friendly port names via PowerShell. Port add/remove is still detected at the faster polling interval."
+        },
+        "serialagent-plus.logBufferKB": {
+          "type": "number",
+          "default": 1024,
+          "minimum": 1,
+          "maximum": 10240,
+          "scope": "machine",
+          "markdownDescription": "Log buffer cap in KB (total UTF-8 bytes, oldest lines dropped first). Shared by the log view and the extension log buffer used by Save Log / MCP `read_serial_log`."
+        },
+        "serialagent-plus.monitorOpenTarget": {
+          "type": "string",
+          "default": "active",
+          "enum": ["active", "beside"],
+          "scope": "machine",
+          "markdownDescription": "Where a Serial Monitor opens in the editor area: `active` reuses the current editor group, `beside` opens a new group to the right."
+        },
+        "serialagent-plus.collapseConfigOnConnect": {
+          "type": "boolean",
+          "default": false,
+          "scope": "window",
+          "markdownDescription": "Collapse the serial Config drawer automatically when a monitor changes from disconnected to connected. Off by default so opening a port never changes your layout."
+        },
+        "serialagent-plus.autoConnectOnStartup": {
+          "type": "boolean",
+          "default": false,
+          "scope": "machine",
+          "markdownDescription": "On startup, automatically open the serial port saved for each monitor. Only ports that are still available are connected; monitors whose device is gone stay disconnected with the saved port cleared. Off by default."
+        }
+      }
+    },
+    "keybindings": [],
+    "submenus": [
+      {
+        "id": "serialagent-plus.openMonitorMenu",
+        "label": "Serial Monitor",
+        "icon": "$(circuit-board)"
+      }
+    ],
+    "menus": {
+      "editor/title": [
+        {
+          "submenu": "serialagent-plus.openMonitorMenu",
+          "group": "navigation",
+          "when": "config.workbench.editor.editorActionsLocation != 'titleBar' && config.workbench.editor.showTabs != 'none'"
+        }
+      ],
+      "serialagent-plus.openMonitorMenu": [
+        { "command": "serialagent-plus.openMonitor1", "when": "serialagent-plus.monitor1", "group": "monitors@1" },
+        { "command": "serialagent-plus.openMonitor2", "when": "serialagent-plus.monitor2", "group": "monitors@2" },
+        { "command": "serialagent-plus.openMonitor3", "when": "serialagent-plus.monitor3", "group": "monitors@3" },
+        { "command": "serialagent-plus.openMonitor4", "when": "serialagent-plus.monitor4", "group": "monitors@4" },
+        { "command": "serialagent-plus.openMonitor5", "when": "serialagent-plus.monitor5", "group": "monitors@5" },
+        { "command": "serialagent-plus.openMonitor6", "when": "serialagent-plus.monitor6", "group": "monitors@6" },
+        { "command": "serialagent-plus.openMonitor7", "when": "serialagent-plus.monitor7", "group": "monitors@7" },
+        { "command": "serialagent-plus.openMonitor8", "when": "serialagent-plus.monitor8", "group": "monitors@8" },
+        { "command": "serialagent-plus.openMonitor9", "when": "serialagent-plus.monitor9", "group": "monitors@9" },
+        { "command": "serialagent-plus.openMonitor10", "when": "serialagent-plus.monitor10", "group": "monitors@10" },
+        { "command": "serialagent-plus.openInTab", "group": "select@1" }
+      ],
+      "commandPalette": [
+        { "command": "serialagent-plus.openMonitor1", "when": "false" },
+        { "command": "serialagent-plus.openMonitor2", "when": "false" },
+        { "command": "serialagent-plus.openMonitor3", "when": "false" },
+        { "command": "serialagent-plus.openMonitor4", "when": "false" },
+        { "command": "serialagent-plus.openMonitor5", "when": "false" },
+        { "command": "serialagent-plus.openMonitor6", "when": "false" },
+        { "command": "serialagent-plus.openMonitor7", "when": "false" },
+        { "command": "serialagent-plus.openMonitor8", "when": "false" },
+        { "command": "serialagent-plus.openMonitor9", "when": "false" },
+        { "command": "serialagent-plus.openMonitor10", "when": "false" },
+        { "command": "serialagent-plus.addMonitor", "when": "false" }
+      ]
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "webpack --config webpack.config.js",
+    "build": "webpack --config webpack.config.js",
+    "pack": "node pack.js",
+    "clean": "rimraf dist",
+    "watch": "tsc -p tsconfig.json -w"
+  },
+  "dependencies": {
+    "@vscode/codicons": "^0.0.36",
+    "iconv-lite": "^0.7.2",
+    "serialport": "^12.0.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Fnote2030/Serial-Agent-Plus"
+  },
+  "vsce": {
+    "baseContentUrl": "https://github.com/Fnote2030/Serial-Agent-Plus/blob/main/packages/serialagent-plus/",
+    "baseImagesUrl": "https://raw.githubusercontent.com/Fnote2030/Serial-Agent-Plus/main/packages/serialagent-plus/"
+  },
+  "devDependencies": {
+    "@types/node": "^25.3.2",
+    "@types/vscode": "^1.85.0",
+    "@vercel/ncc": "^0.38.4",
+    "node-loader": "^2.1.0",
+    "rimraf": "^5.0.0",
+    "ts-loader": "^9.5.4",
+    "typescript": "^5.5.0",
+    "webpack": "^5.105.3",
+    "webpack-cli": "^6.0.1"
+  }
+}

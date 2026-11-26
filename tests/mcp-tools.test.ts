@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import { z } from 'zod';
-import { registerTools } from '../packages/serialagent-mcp/src/index';
+import { registerTools } from '../packages/serialagent-plus-mcp/src/index';
 
 type ToolHandler = (args: any) => Promise<any>;
 
@@ -29,25 +29,26 @@ function parseSchema(shape: Record<string, unknown>) {
 }
 
 describe('MCP tools registration and bridge mapping', () => {
-  it('should register all 14 tools', () => {
+  it('should register all 15 tools (9 core + 6 monitor management)', () => {
     const server = new FakeMcpServer();
     registerTools(server as any, vi.fn() as any);
-    expect(server.tools.size).toBe(14);
+    expect(server.tools.size).toBe(15);
 
     expect([...server.tools.keys()].sort()).toEqual([
-      'build_and_flash_keil',
-      'build_keil_project',
-      'check_keil_config',
       'clear_serial_log',
       'connect_serial',
+      'create_monitor',
+      'delete_monitor',
       'disconnect_serial',
-      'flash_keil_firmware',
+      'get_monitor_config',
       'get_serial_status',
+      'list_monitors',
       'list_serial_ports',
       'read_serial_log',
-      'run_custom_command',
+      'rename_monitor',
       'send_and_wait',
       'send_serial_data',
+      'update_monitor_config',
       'wait_for_output',
     ]);
   });
@@ -85,10 +86,55 @@ describe('MCP tools registration and bridge mapping', () => {
     expect(requester).toHaveBeenCalledWith('GET', '/api/status');
     expect(requester).toHaveBeenCalledWith('GET', '/api/ports');
     expect(requester).toHaveBeenCalledWith('POST', '/api/connect', { port: 'COM7', baudRate: 9600, dataBits: 8, stopBits: 1, parity: 'none' });
-    expect(requester).toHaveBeenCalledWith('POST', '/api/disconnect');
+    expect(requester).toHaveBeenCalledWith('POST', '/api/disconnect', {});
     expect(requester).toHaveBeenCalledWith('GET', '/api/log?lines=20');
     expect(requester).toHaveBeenCalledWith('POST', '/api/send', { data: 'AT', hexMode: false });
-    expect(requester).toHaveBeenCalledWith('POST', '/api/clear');
+    expect(requester).toHaveBeenCalledWith('POST', '/api/clear', {});
+  });
+
+  it('should route monitor-scoped tools by index or name', async () => {
+    const requester = vi.fn(async () => ({ content: [{ type: 'text', text: '{}' }] }));
+    const server = new FakeMcpServer();
+    registerTools(server as any, requester as any);
+
+    await getTool(server, 'get_serial_status').handler({ monitor: '2' });
+    await getTool(server, 'read_serial_log').handler({ lines: 10, monitor: 'RTT' });
+    await getTool(server, 'send_serial_data').handler({ data: 'AT', hexMode: false, monitor: '2' });
+    await getTool(server, 'disconnect_serial').handler({ monitor: 'RTT' });
+    await getTool(server, 'wait_for_output').handler({ pattern: 'OK', timeout: 5, scanBuffer: false, monitor: '3' });
+
+    expect(requester).toHaveBeenCalledWith('GET', '/api/status?monitor=2');
+    expect(requester).toHaveBeenCalledWith('GET', '/api/log?lines=10&monitor=RTT');
+    expect(requester).toHaveBeenCalledWith('POST', '/api/send', { data: 'AT', hexMode: false, monitor: '2' });
+    expect(requester).toHaveBeenCalledWith('POST', '/api/disconnect', { monitor: 'RTT' });
+    expect(requester).toHaveBeenCalledWith(
+      'GET',
+      '/api/log/wait?pattern=OK&timeout=5&scanBuffer=false&monitor=3',
+      undefined,
+      10000,
+    );
+  });
+
+  it('should map monitor management tools to management endpoints', async () => {
+    const requester = vi.fn(async () => ({ content: [{ type: 'text', text: '{}' }] }));
+    const server = new FakeMcpServer();
+    registerTools(server as any, requester as any);
+
+    await getTool(server, 'list_monitors').handler({});
+    await getTool(server, 'create_monitor').handler({ name: 'RTT' });
+    await getTool(server, 'create_monitor').handler({});
+    await getTool(server, 'delete_monitor').handler({ monitor: '2' });
+    await getTool(server, 'rename_monitor').handler({ monitor: 'RTT', name: 'Debug UART' });
+    await getTool(server, 'get_monitor_config').handler({ monitor: '1' });
+    await getTool(server, 'update_monitor_config').handler({ monitor: '1', showTimestamp: true, rxIdleWrapMs: 50 });
+
+    expect(requester).toHaveBeenCalledWith('GET', '/api/monitors');
+    expect(requester).toHaveBeenCalledWith('POST', '/api/monitors', { name: 'RTT' });
+    expect(requester).toHaveBeenCalledWith('POST', '/api/monitors', {});
+    expect(requester).toHaveBeenCalledWith('DELETE', '/api/monitors/2');
+    expect(requester).toHaveBeenCalledWith('POST', '/api/monitors/RTT/rename', { name: 'Debug UART' });
+    expect(requester).toHaveBeenCalledWith('GET', '/api/monitors/1/config');
+    expect(requester).toHaveBeenCalledWith('POST', '/api/monitors/1/config', { showTimestamp: true, rxIdleWrapMs: 50 });
   });
 
   it('wait_for_output should encode query and set timeoutMs', async () => {
@@ -125,36 +171,6 @@ describe('MCP tools registration and bridge mapping', () => {
       { data: 'AT', pattern: 'OK', timeout: 10, hexMode: false, lineEnding: 'crlf' },
       15000,
     );
-  });
-
-  it('Keil tools should map to correct endpoints and pass through error text', async () => {
-    const expectedError = {
-      content: [{ type: 'text' as const, text: 'Bridge API POST /api/keil/build failed [KEIL_TASK_BUSY]: Another task is running' }],
-      isError: true,
-    };
-    const requester = vi.fn(async (method: string, path: string) => {
-      if (method === 'POST' && path === '/api/keil/build') {
-        return expectedError;
-      }
-      return { content: [{ type: 'text' as const, text: '{}' }] };
-    });
-    const server = new FakeMcpServer();
-    registerTools(server as any, requester as any);
-
-    await getTool(server, 'check_keil_config').handler({});
-    const buildRes = await getTool(server, 'build_keil_project').handler({});
-    await getTool(server, 'flash_keil_firmware').handler({ artifactPath: 'D:/fw/app.hex' });
-    await getTool(server, 'build_and_flash_keil').handler({});
-    await getTool(server, 'run_custom_command').handler({});
-
-    expect(requester).toHaveBeenCalledWith('GET', '/api/keil/config-check');
-    expect(requester).toHaveBeenCalledWith('POST', '/api/keil/build');
-    expect(requester).toHaveBeenCalledWith('POST', '/api/keil/flash', { artifactPath: 'D:/fw/app.hex' });
-    expect(requester).toHaveBeenCalledWith('POST', '/api/keil/build-and-flash');
-    expect(requester).toHaveBeenCalledWith('POST', '/api/custom/run');
-
-    expect(buildRes.isError).toBe(true);
-    expect(buildRes.content[0].text).toContain('KEIL_TASK_BUSY');
   });
 });
 

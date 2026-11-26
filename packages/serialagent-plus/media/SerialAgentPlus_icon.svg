@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24"
+     fill="none" stroke="currentColor" stroke-width="1.5"
+     stroke-linecap="round" stroke-linejoin="round">
+  <!-- 串口监视器屏幕 -->
+  <rect x="2.75" y="3.5" width="18.5" height="12" rx="2"/>
+  <!-- 屏内方波信号（直角折线） -->
+  <path d="M6 11h2.2V8.2h2.4v5.6h2.4V11H18"
+        stroke-linejoin="miter" stroke-linecap="butt"/>
+  <!-- 底座 -->
+  <path d="M12 15.5v3"/>
+  <path d="M8.75 19.75h6.5"/>
+</svg>

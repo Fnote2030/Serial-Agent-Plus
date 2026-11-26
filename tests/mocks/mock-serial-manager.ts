@@ -2,7 +2,7 @@
  * Mock SerialManager — 模拟串口管理器的基本行为
  *
  * 用于 Bridge Server API 单元测试，替代真实的 SerialManager（无需真实串口硬件）。
- * 接口与 serialagent-vscode/src/extension.ts 中的 SerialManager 保持一致。
+ * 接口与 serialagent-plus/src/extension.ts 中的 SerialManager 保持一致。
  *
  * 使用方式：
  *   const mock = new MockSerialManager();
@@ -12,8 +12,13 @@
  * 对应 Plan.md S0.05
  */
 
-// 共享类型从 packages/serialagent-vscode/src/types.ts 导入
-import { PortInfo, SerialConfig, DEFAULT_CONFIG, ISerialManager } from '../../packages/serialagent-vscode/src/types';
+// 共享类型从 packages/serialagent-plus/src/types.ts 导入
+import { PortInfo, SerialConfig, DEFAULT_CONFIG, ISerialManager } from '../../packages/serialagent-plus/src/types';
+// 与真实实现共用同一个 HEX 回显格式化
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const { normalizeHexInput } = require('../../packages/serialagent-plus/media/hex-format.js') as {
+  normalizeHexInput: (text: string) => string;
+};
 
 // 重新导出以保持向后兼容（已有测试文件可能从此处导入）
 export { PortInfo, SerialConfig, DEFAULT_CONFIG, ISerialManager };
@@ -232,6 +237,17 @@ export class MockSerialManager implements ISerialManager {
     this._logBuffer.push(line);
     if (this._logBuffer.length > 5000) { this._logBuffer.shift(); }
     for (const cb of this._newLogSubscribers) { cb(line); }
+  }
+
+  /** 注入 TX 回显日志（与真实 SerialManager 行为一致：时间戳在行首，HEX 发送用 MCP TX HEX>>） */
+  injectTxLog(data: string, hexMode = false): void {
+    const now = new Date();
+    const prefix = this._config.showTimestamp
+      ? `[${now.toTimeString().split(' ')[0]}.${String(now.getMilliseconds()).padStart(3, '0')}] `
+      : '';
+    const label = hexMode ? 'MCP TX HEX>>' : 'MCP TX>>';
+    const body = hexMode ? normalizeHexInput(String(data)) : String(data);
+    this.injectLog(body.split('\n').map((line) => `${prefix}${label} ${line}`).join('\n'));
   }
 
   /** 订阅新日志行 */

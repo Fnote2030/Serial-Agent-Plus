@@ -6,7 +6,7 @@ import {
   decodeSerialText,
   encodeSerialText,
   normalizeSerialEncoding,
-} from '../packages/serialagent-vscode/src/text-codec';
+} from '../packages/serialagent-plus/src/text-codec';
 
 describe('normalizeSerialEncoding', () => {
   it('gbk 原样保留，其余值一律回退 utf8', () => {

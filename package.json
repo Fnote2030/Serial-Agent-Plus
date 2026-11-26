@@ -1,15 +1,15 @@
 {
-  "name": "serial-agent-monorepo",
-  "version": "1.1.0",
+  "name": "serialagent-plus",
+  "version": "1.0.0",
   "private": true,
-  "description": "Serial Agent monorepo - VS Code extension, MCP server, and skill source",
+  "description": "Serial Agent Plus monorepo - VS Code extension, MCP server, and skill source. Unofficial fork of Rance-OwO/Serial-Agent with enhanced serial features.",
   "repository": {
     "type": "git",
-    "url": "https://github.com/Rance-OwO/Serial-Agent"
+    "url": "https://github.com/Fnote2030/Serial-Agent-Plus"
   },
   "workspaces": [
-    "packages/serialagent-mcp",
-    "packages/serialagent-vscode"
+    "packages/serialagent-plus-mcp",
+    "packages/serialagent-plus"
   ],
   "scripts": {
     "build": "npm run build --workspaces",
@@ -17,7 +17,6 @@
     "watch": "npm run watch --workspaces --if-present",
     "bridge:build": "tsc -p tsconfig.bridge.json",
     "bridge": "npm run bridge:build && node dist-bridge/tests/test-bridge-real-hw.js",
-    "test:e2e:keil-bootlog": "node tests/e2e-keil-flash-bootlog.js",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage"

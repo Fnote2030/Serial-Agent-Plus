@@ -1,0 +1,1188 @@
+/* Serial Agent Plus 侧边栏 Webview 主样式 */
+
+body {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+  background: var(--vscode-sideBar-background, var(--vscode-editor-background));
+}
+
+.hidden {
+  display: none !important;
+}
+
+.accordion-root {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.accordion-panel {
+  display: flex;
+  flex-direction: column;
+  flex-shrink: 0;
+  min-height: 0;
+}
+
+.accordion-panel.is-expanded {
+  flex-shrink: 0;
+}
+
+.accordion-panel--monitor.is-expanded {
+  flex: 1;
+  min-height: 0;
+}
+
+.accordion-header {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  height: 22px;
+  line-height: 22px;
+  padding: 0 8px;
+  font-size: 13px;
+  font-weight: 400;
+  color: var(--vscode-sideBarSectionHeader-foreground, var(--vscode-foreground));
+  background: var(--vscode-sideBarSectionHeader-background, transparent);
+  border: none;
+  cursor: pointer;
+  user-select: none;
+  flex-shrink: 0;
+  text-align: left;
+  width: 100%;
+}
+
+.accordion-header:hover {
+  background: var(--vscode-list-hoverBackground, rgba(128, 128, 128, 0.12));
+}
+
+.accordion-header:focus {
+  outline: 1px solid var(--vscode-focusBorder);
+  outline-offset: -1px;
+}
+
+.accordion-header--static,
+.accordion-header--static:hover {
+  cursor: default;
+  background: var(--vscode-sideBarSectionHeader-background, transparent);
+}
+
+.accordion-title {
+  flex: 1;
+  min-width: 0;
+}
+
+.monitor-row-btn {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--vscode-descriptionForeground);
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.monitor-row-btn:hover {
+  background: var(--vscode-button-secondaryHoverBackground, rgba(128, 128, 128, 0.3));
+  color: var(--vscode-foreground);
+}
+
+.monitor-row-btn .codicon {
+  font-size: 13px;
+}
+
+/* ---- 当前监视器标题行（标签栏下方）：名称 + 新建 + 展开到编辑器 ---- */
+.monitor-title-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-bottom: 4px;
+  flex-shrink: 0;
+}
+
+.monitor-title-row-name {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--vscode-foreground);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+  padding: 0 2px;
+  border-radius: 3px;
+  cursor: text;
+}
+
+.monitor-title-row-name:hover {
+  background: var(--vscode-button-secondaryHoverBackground, rgba(128, 128, 128, 0.12));
+}
+
+/* 标题行重命名：`序号=` 固定前缀 + 名称输入框 */
+.monitor-title-row-name.is-renaming {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  overflow: visible;
+  padding: 0;
+  background: transparent;
+}
+
+.monitor-title-index {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--vscode-descriptionForeground);
+  user-select: none;
+}
+
+.monitor-title-rename-input {
+  width: 120px;
+  max-width: 100%;
+  height: 18px;
+  padding: 0 4px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--vscode-input-foreground);
+  background: var(--vscode-input-background);
+  border: 1px solid var(--vscode-focusBorder);
+  border-radius: 4px;
+  outline: none;
+}
+
+.accordion-body {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  padding: 0 8px 8px;
+  overflow: hidden;
+}
+
+.accordion-panel--monitor.is-expanded .accordion-body {
+  flex: 1;
+  min-height: 0;
+}
+
+.panel-inner {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.monitor-panel-main {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.monitor-status-bar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  padding: 6px 0;
+  font-size: 11px;
+  color: var(--vscode-descriptionForeground);
+  border-bottom: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.2));
+  margin-bottom: 8px;
+  gap: 6px;
+  row-gap: 4px;
+  flex-shrink: 0;
+}
+
+.config-chip {
+  font-size: 10px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  border: 1px solid var(--vscode-input-border, rgba(128, 128, 128, 0.3));
+  background: var(--vscode-badge-background, rgba(128, 128, 128, 0.15));
+  color: var(--vscode-badge-foreground, var(--vscode-descriptionForeground));
+}
+
+/* ---- 多监视器标签栏（VS Code 编辑器选项卡风格）---- */
+.monitor-tabs-wrap {
+  flex-shrink: 0;
+  margin-bottom: 4px;
+  padding-right: 2px; /* 防止最右侧按钮聚焦/悬停贴边被裁剪（同日志工具条做法） */
+}
+
+.monitor-tabs-scroll {
+  display: flex;
+  align-items: stretch;
+  min-width: 0;
+  flex: 1;
+}
+
+.monitor-tabs {
+  display: flex;
+  align-items: stretch;
+  gap: 2px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none; /* 原生滚动条完全隐藏（含箭头），顶部用自绘滑块 */
+  -ms-overflow-style: none;
+  min-width: 0; /* 允许收缩，标签在内部滚动，+ 按钮钉在容器右侧不被挤走 */
+  flex: 1 1 auto;
+  min-height: 24px;
+}
+
+.monitor-tabs::-webkit-scrollbar {
+  display: none;
+  height: 0;
+}
+
+/* 编辑器面板（绑定单一监视器）不显示标签栏管理组件 */
+.panel-view .monitor-tabs-wrap {
+  display: none;
+}
+/* 编辑器面板本身就是编辑器区视图：隐藏“在编辑器区打开”按钮 */
+.panel-view #btn-monitor-expand {
+  display: none;
+}
+/* 标签栏最右侧固定的新建按钮（不随标签滚动，永不被遮挡） */
+.monitor-tabs-add {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  margin-left: 4px;
+  padding: 0;
+  border: none;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--vscode-descriptionForeground);
+  font-size: 15px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.monitor-tabs-add:hover {
+  background: var(--vscode-button-secondaryHoverBackground, rgba(128, 128, 128, 0.3));
+  color: var(--vscode-foreground);
+}
+
+/* 顶部自绘滑块：3px、悬停浮现（同 VS Code 选项卡栏，无箭头） */
+.monitor-tabs-slider {
+  position: relative;
+  height: 3px;
+  border-radius: 2px;
+  margin-bottom: 1px;
+  opacity: 0;
+  transition: opacity 0.15s ease;
+}
+
+/* 悬停标签栏或拖拽滑块时才浮现 */
+.monitor-tabs-wrap:hover .monitor-tabs-slider.visible,
+.monitor-tabs-slider.force-visible {
+  opacity: 1;
+}
+
+.monitor-tabs-slider-thumb {
+  position: absolute;
+  top: 0;
+  left: 0;
+  height: 3px;
+  min-width: 24px;
+  border-radius: 2px;
+  background: var(--vscode-scrollbarSlider-background, rgba(121, 121, 121, 0.4));
+  cursor: pointer;
+}
+
+.monitor-tabs-slider-thumb:hover,
+.monitor-tabs-slider-thumb.dragging {
+  background: var(--vscode-scrollbarSlider-hoverBackground, rgba(100, 100, 100, 0.7));
+}
+
+.monitor-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  flex: 0 0 auto;
+  max-width: 180px;
+  padding: 0 5px 0 8px;
+  font-size: 11px;
+  line-height: 21px;
+  border: 1px solid transparent;
+  border-bottom: none;
+  border-radius: 4px 4px 0 0;
+  background: transparent;
+  color: var(--vscode-descriptionForeground);
+  cursor: pointer;
+  user-select: none;
+  white-space: nowrap;
+}
+
+.monitor-tab:hover {
+  background: var(--vscode-button-secondaryHoverBackground, rgba(128, 128, 128, 0.15));
+  color: var(--vscode-foreground);
+}
+
+.monitor-tab.active {
+  background: var(--vscode-editorGroupHeader-tabsBackground, rgba(128, 128, 128, 0.12));
+  border-color: var(--vscode-panel-border, rgba(128, 128, 128, 0.25));
+  color: var(--vscode-foreground);
+  font-weight: 600;
+  /* 底部主题色强调条：明显但不突兀 */
+  box-shadow: inset 0 -2px 0 var(--vscode-focusBorder, var(--vscode-foreground, #0078d4));
+}
+
+.monitor-tab-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.monitor-tab .status-indicator {
+  width: 6px;
+  height: 6px;
+  margin-right: 0;
+  flex: none;
+}
+
+.monitor-tab-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 15px;
+  height: 15px;
+  padding: 0;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: inherit;
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+  opacity: 0.3;
+}
+
+.monitor-tab-close:hover {
+  opacity: 1;
+  background: var(--vscode-inputValidation-errorBorder, #f14c4c);
+  color: #fff;
+}
+
+.monitor-tab-rename-input {
+  width: 110px;
+  height: 18px;
+  padding: 0 4px;
+  font-size: 11px;
+  color: var(--vscode-input-foreground);
+  background: var(--vscode-input-background);
+  border: 1px solid var(--vscode-focusBorder);
+  border-radius: 4px;
+  outline: none;
+}
+
+.status-action-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  box-sizing: border-box;
+  height: 24px;
+  min-height: 24px;
+  max-height: 24px;
+  padding-block: 0;
+  padding-inline: 8px;
+  font-size: 11px;
+  line-height: 16px;
+  border: 1px solid var(--vscode-input-border, rgba(128, 128, 128, 0.3));
+  border-radius: 999px;
+  cursor: pointer;
+  color: var(--vscode-button-secondaryForeground, var(--vscode-foreground));
+  background: var(--vscode-button-secondaryBackground, rgba(128, 128, 128, 0.18));
+}
+
+.status-action-btn:hover {
+  background: var(--vscode-button-secondaryHoverBackground, rgba(128, 128, 128, 0.3));
+}
+
+/* 聚焦指示画在按钮内部（与日志工具条一致），不改变按钮视觉高度 */
+.status-action-btn:focus {
+  outline: none;
+  box-shadow: inset 0 0 0 1px var(--vscode-focusBorder);
+}
+
+/* Config 按钮加大 1px，视觉上与彩色 Open/Close 按钮等高 */
+#btn-config-toggle {
+  height: 25px;
+  min-height: 25px;
+  max-height: 25px;
+}
+
+.status-action-btn.status-action-primary {
+  color: var(--vscode-button-foreground);
+  background: var(--vscode-button-background);
+  border-color: transparent;
+}
+
+.status-action-btn.status-action-primary:hover {
+  background: var(--vscode-button-hoverBackground);
+}
+
+.status-action-btn.status-action-danger {
+  color: #fff;
+  background: var(--vscode-inputValidation-errorBorder, #f14c4c);
+  border-color: transparent;
+}
+
+.status-action-btn.status-action-danger:hover {
+  opacity: 0.85;
+}
+
+.spacer { flex: 1; }
+
+#status-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.counter {
+  font-family: var(--vscode-editor-font-family, 'Consolas', monospace);
+  font-size: 10px;
+  padding: 1px 4px;
+  border-radius: 999px;
+  background: var(--vscode-badge-background, rgba(128,128,128,0.15));
+  color: var(--vscode-badge-foreground, var(--vscode-descriptionForeground));
+}
+
+.status-indicator {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.status-connected { background: #4ec9b0; }
+.status-disconnected { background: #6c6c6c; }
+
+.send-ending-option select {
+  padding: 2px 4px;
+  font-size: 10px;
+  background: var(--vscode-input-background);
+  color: var(--vscode-input-foreground);
+  border: 1px solid var(--vscode-input-border, rgba(128, 128, 128, 0.3));
+  border-radius: 4px;
+  outline: none;
+  margin-left: 2px;
+}
+
+.log-search-input,
+.quick-command-input,
+.config-row select,
+.config-section select,
+.config-row input[type="number"] {
+  padding: 4px 6px;
+  font-size: 12px;
+  background: var(--vscode-input-background);
+  color: var(--vscode-input-foreground);
+  border: 1px solid var(--vscode-input-border, rgba(128, 128, 128, 0.3));
+  border-radius: 4px;
+  outline: none;
+}
+
+.log-search-input:focus,
+.quick-command-input:focus,
+.config-row select:focus,
+.config-row input[type="number"]:focus {
+  border-color: var(--vscode-focusBorder);
+}
+
+.config-section {
+  margin-bottom: 8px;
+}
+
+.config-row {
+  display: flex;
+  align-items: center;
+  margin-bottom: 4px;
+  gap: 6px;
+}
+
+.config-row label {
+  font-size: 11px;
+  font-weight: 600;
+  min-width: 38px;
+  color: var(--vscode-foreground);
+}
+
+.config-control {
+  display: flex;
+  flex: 1;
+  gap: 4px;
+  align-items: center;
+}
+
+.config-row select,
+.config-section select,
+.config-row input[type="number"] {
+  flex: 1;
+}
+
+.config-row select:disabled,
+.config-row input[type="number"]:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.config-row input[type="number"]::-webkit-inner-spin-button,
+.config-row input[type="number"]::-webkit-outer-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
+.config-row input[type="number"] {
+  -moz-appearance: textfield;
+  appearance: textfield;
+}
+
+#advanced-config {
+  margin-top: 4px;
+}
+
+.icon-btn {
+  padding: 3px 8px;
+  font-size: 14px;
+  background: var(--vscode-button-secondaryBackground, rgba(128, 128, 128, 0.2));
+  color: var(--vscode-button-secondaryForeground, var(--vscode-foreground));
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  line-height: 1;
+  flex-shrink: 0;
+}
+
+.icon-btn:hover {
+  background: var(--vscode-button-secondaryHoverBackground, rgba(128, 128, 128, 0.3));
+}
+
+.action-bar {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 6px;
+  flex-shrink: 0;
+}
+
+.btn-primary,
+.btn-danger,
+.btn-secondary {
+  padding: 6px 10px;
+  font-size: 12px;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.btn-primary {
+  flex: 2;
+  font-weight: 600;
+  color: var(--vscode-button-foreground);
+  background: var(--vscode-button-background);
+}
+
+.btn-primary:hover {
+  background: var(--vscode-button-hoverBackground);
+}
+
+.btn-danger {
+  flex: 2;
+  font-weight: 600;
+  color: #fff;
+  background: var(--vscode-inputValidation-errorBorder, #f14c4c);
+}
+
+.btn-danger:hover {
+  opacity: 0.85;
+}
+
+.btn-secondary {
+  flex: 1;
+  color: var(--vscode-button-secondaryForeground, var(--vscode-foreground));
+  background: var(--vscode-button-secondaryBackground, rgba(128, 128, 128, 0.2));
+}
+
+.btn-secondary:hover {
+  background: var(--vscode-button-secondaryHoverBackground, rgba(128, 128, 128, 0.3));
+}
+
+.btn-secondary:disabled,
+.btn-primary:disabled,
+.btn-danger:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.btn-compact {
+  flex: 0 0 auto;
+  padding: 4px 8px;
+  font-size: 11px;
+}
+
+.btn-icon-compact {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 24px;
+  padding: 0;
+  font-size: 11px;
+}
+
+.btn-icon-compact .btn-icon-svg {
+  width: 16px;
+  height: 16px;
+  color: var(--vscode-button-secondaryForeground, var(--vscode-foreground));
+  opacity: 0.85;
+}
+
+.btn-icon-compact:hover .btn-icon-svg {
+  opacity: 1;
+}
+
+.btn-icon-compact:active {
+  background: var(--vscode-button-secondaryHoverBackground, rgba(128, 128, 128, 0.35));
+}
+
+.log-toolbar,
+.options-bar,
+.send-options-row,
+.quick-command-form,
+.quick-command-manage-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.log-toolbar {
+  margin-bottom: 8px;
+  flex-shrink: 0;
+  flex-wrap: wrap;
+  padding-right: 2px;
+}
+
+/* 聚焦指示用 inset box-shadow：画在按钮边框盒内部，物理上不会超出按钮、
+   也不会被面板右缘裁剪（outline 即使负 offset 在部分 UA 渲染下仍可能外溢） */
+.log-toolbar > :focus,
+.log-toolbar > :focus-visible {
+  outline: none;
+  box-shadow: inset 0 0 0 1px var(--vscode-focusBorder);
+}
+
+.log-search-input {
+  flex: 1 1 150px;
+  min-width: 0;
+}
+
+.options-bar {
+  flex-wrap: wrap;
+  padding: 2px 0 8px;
+  margin-bottom: 4px;
+  font-size: 11px;
+  color: var(--vscode-descriptionForeground);
+  flex-shrink: 0;
+}
+
+.option-item {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  cursor: pointer;
+  user-select: none;
+}
+
+.option-item-inline {
+  padding: 4px 8px;
+  border-radius: 999px;
+  background: rgba(128, 128, 128, 0.08);
+}
+
+.option-item input[type="checkbox"] {
+  margin: 0;
+  cursor: pointer;
+}
+
+.content-wrapper {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+  border: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.18));
+  border-radius: 10px;
+  background: var(--vscode-editorWidget-background, rgba(30, 30, 30, 0.06));
+  padding: 8px;
+}
+
+.log-section {
+  position: relative;
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  min-height: 120px;
+  overflow: hidden;
+}
+
+.log-area {
+  font-family: var(--vscode-editor-font-family, 'Consolas', monospace);
+  font-size: 12px;
+  line-height: 1.45;
+  background: var(--vscode-editor-background);
+  color: var(--vscode-editor-foreground);
+  padding: 8px;
+  border-radius: 8px;
+  border: 1px solid var(--vscode-input-border, rgba(128, 128, 128, 0.2));
+  overflow-y: auto;
+  white-space: pre-wrap;
+  word-break: break-all;
+  flex: 1;
+  outline: none;
+}
+
+.log-line {
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+.log-echo {
+  color: var(--vscode-terminal-ansiGreen, #4ec94e);
+  font-style: italic;
+}
+
+.empty-state {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: flex-start;
+  justify-content: flex-start;
+  padding: 8px 10px;
+  background: transparent;
+  border: none;
+  border-radius: 0;
+  z-index: 1;
+  pointer-events: none;
+  color: var(--vscode-input-placeholderForeground, var(--vscode-descriptionForeground));
+  font-size: 12px;
+  font-family: var(--vscode-editor-font-family, 'Consolas', monospace);
+  font-style: normal;
+  font-weight: 400;
+  line-height: 1.45;
+  text-align: left;
+}
+
+.empty-state.hidden {
+  display: none;
+}
+
+.resize-handle {
+  height: 10px;
+  cursor: ns-resize;
+  background: transparent;
+  position: relative;
+  flex-shrink: 0;
+}
+
+.resize-handle::after {
+  content: '';
+  position: absolute;
+  left: 30%;
+  right: 30%;
+  top: 4px;
+  height: 2px;
+  border-radius: 1px;
+  background: var(--vscode-panel-border, rgba(128, 128, 128, 0.3));
+  transition: background 0.15s, transform 0.15s;
+}
+
+.resize-handle:hover::after {
+  background: var(--vscode-focusBorder, #007acc);
+  transform: scaleX(1.08);
+}
+
+.send-section {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-bottom: 4px;
+  flex: 0 0 38%;
+  min-height: 120px;
+  /* Manage Quick Commands 展开后在发送区内部滚动，不把输入框挤出视图 */
+  overflow-y: auto;
+}
+
+/* 发送历史菜单向上弹出：展开时必须允许越过发送区上边界，
+   否则被 overflow 裁剪、看起来像被日志区遮挡 */
+.send-section:has(.history-dropdown.open),
+.send-section.history-open {
+  overflow: visible;
+  position: relative;
+  z-index: 5;
+}
+
+.quick-command-bar {
+  display: flex;
+  align-items: center;
+  min-height: 34px;
+  flex-shrink: 0;
+}
+
+.quick-command-bar.hidden {
+  display: none;
+}
+
+.quick-command-list {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  width: 100%;
+}
+
+.quick-command-chip {
+  padding: 5px 10px;
+  font-size: 11px;
+  border: none;
+  border-radius: 999px;
+  cursor: pointer;
+  color: var(--vscode-button-foreground);
+  background: linear-gradient(135deg, var(--vscode-button-background), rgba(55, 148, 255, 0.8));
+}
+
+.quick-command-chip:hover {
+  filter: brightness(1.05);
+}
+
+.quick-command-empty {
+  font-size: 11px;
+  color: var(--vscode-descriptionForeground);
+}
+
+.quick-command-editor {
+  border: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.18));
+  border-radius: 8px;
+  padding: 6px 8px;
+  background: rgba(128, 128, 128, 0.04);
+  flex-shrink: 0;
+}
+
+.quick-command-editor summary {
+  cursor: pointer;
+  font-size: 11px;
+  color: var(--vscode-descriptionForeground);
+  user-select: none;
+}
+
+.quick-command-form {
+  margin-top: 8px;
+  flex-wrap: wrap;
+  align-items: flex-start;
+}
+
+.quick-command-input {
+  min-width: 0;
+}
+
+.quick-command-value {
+  flex: 1 1 100%;
+  min-width: 0;
+  width: 100%;
+  font-family: var(--vscode-editor-font-family, 'Consolas', monospace);
+  line-height: 1.45;
+  resize: none;
+}
+
+.quick-command-manage-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 140px;
+  overflow-y: auto;
+  margin-top: 8px;
+}
+
+.quick-command-manage-item {
+  justify-content: space-between;
+  padding: 6px 8px;
+  border-radius: 6px;
+  background: rgba(128, 128, 128, 0.06);
+}
+
+.quick-command-manage-meta {
+  flex: 1;
+  min-width: 0;
+  font-size: 11px;
+  color: var(--vscode-foreground);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.send-options-row {
+  flex-shrink: 0;
+  flex-wrap: wrap;
+  row-gap: 4px;
+  column-gap: calc(8px + 2ch);
+}
+
+.send-options-row .option-item {
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
+/* Cycle 复选框 + 数值输入 + ms 单位是一个整体，换行时不拆分 */
+.cycle-group {
+  display: inline-flex;
+  align-items: center;
+  flex-shrink: 0;
+  gap: 8px;
+}
+
+.cycle-group .periodic-unit {
+  margin-left: -4px;
+}
+
+.history-dropdown {
+  position: relative;
+  flex: 1;
+  min-width: 80px;
+}
+
+.history-toggle {
+  width: 100%;
+  padding: 4px 8px;
+  font-size: 11px;
+  text-align: left;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  background: var(--vscode-input-background);
+  color: var(--vscode-input-foreground);
+  border: 1px solid var(--vscode-input-border, rgba(128, 128, 128, 0.3));
+  border-radius: 4px;
+  cursor: pointer;
+  outline: none;
+}
+
+.history-toggle:hover {
+  border-color: var(--vscode-focusBorder);
+}
+
+.history-menu {
+  display: none;
+  position: absolute;
+  bottom: calc(100% + 2px);
+  left: 0;
+  right: 0;
+  max-height: 180px;
+  overflow-y: auto;
+  background: var(--vscode-dropdown-background, var(--vscode-input-background));
+  border: 1px solid var(--vscode-dropdown-border, var(--vscode-input-border, rgba(128,128,128,0.4)));
+  border-radius: 6px;
+  box-shadow: 0 -2px 8px rgba(0, 0, 0, 0.2);
+  z-index: 100;
+}
+
+.history-dropdown.open .history-menu {
+  display: block;
+}
+
+.history-item {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 6px;
+  font-size: 11px;
+  cursor: default;
+}
+
+.history-item:hover {
+  background: var(--vscode-list-hoverBackground, rgba(128, 128, 128, 0.15));
+}
+
+.history-text {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+  color: var(--vscode-foreground);
+}
+
+.history-delete {
+  flex-shrink: 0;
+  width: 18px;
+  height: 18px;
+  line-height: 16px;
+  text-align: center;
+  font-size: 14px;
+  font-weight: bold;
+  border: none;
+  border-radius: 3px;
+  background: transparent;
+  color: var(--vscode-errorForeground, #f44);
+  cursor: pointer;
+  padding: 0;
+}
+
+.history-delete:hover {
+  background: var(--vscode-inputValidation-errorBackground, rgba(255, 68, 68, 0.15));
+}
+
+.history-empty {
+  padding: 6px 8px;
+  font-size: 11px;
+  color: var(--vscode-descriptionForeground);
+  text-align: center;
+  font-style: italic;
+}
+
+.btn-send {
+  padding: 5px 12px;
+  font-size: 11px;
+  font-weight: 600;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  color: var(--vscode-button-foreground);
+  background: var(--vscode-button-background);
+  flex-shrink: 0;
+}
+
+.btn-send:hover {
+  background: var(--vscode-button-hoverBackground);
+}
+
+.btn-send:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.send-input-row {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+}
+
+.send-input-row textarea {
+  flex: 1;
+  min-height: 44px; /* 发送区压缩时保留可用的输入高度，其余部分滚动 */
+  padding: 8px 10px;
+  font-size: 12px;
+  font-family: var(--vscode-editor-font-family, 'Consolas', monospace);
+  background: var(--vscode-input-background);
+  color: var(--vscode-input-foreground);
+  border: 1px solid var(--vscode-input-border, rgba(128, 128, 128, 0.3));
+  border-radius: 8px;
+  outline: none;
+  resize: none;
+  line-height: 1.45;
+}
+
+.send-input-row textarea::placeholder {
+  color: var(--vscode-input-placeholderForeground, var(--vscode-descriptionForeground));
+  font-size: 12px;
+  font-family: var(--vscode-editor-font-family, 'Consolas', monospace);
+  font-style: normal;
+  font-weight: 400;
+  line-height: 1.45;
+}
+
+.send-input-row textarea:focus {
+  border-color: var(--vscode-focusBorder);
+}
+
+.send-input-row textarea:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.serial-config-drawer {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 4px 0 6px;
+  border-bottom: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.25));
+  margin-bottom: 4px;
+  flex-shrink: 0;
+}
+
+/* 与 <details>/<summary> 原生披露标记一致的实心小三角：▸ 收起 / ▾ 展开。
+   图标占位固定 8×8，三角用 clip-path 画在框内并旋转，两态宽度一致不抖动 */
+.config-toggle-icon {
+  flex: none;
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  background: currentColor;
+  clip-path: polygon(0 0, 100% 50%, 0 100%);
+  transition: transform 0.1s ease;
+}
+
+.status-action-btn[aria-expanded="true"] .config-toggle-icon {
+  transform: rotate(90deg);
+}
+
+.periodic-interval-input {
+  flex: 0 0 auto;
+  width: 64px;
+  padding: 2px 4px;
+  font-size: 11px;
+}
+
+.periodic-unit {
+  font-size: 11px;
+  opacity: 0.8;
+  flex-shrink: 0;
+  margin-left: -8px;
+}
+
+.terminal-input-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 6px;
+  border-top: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.25));
+  flex-shrink: 0;
+}
+
+.terminal-prompt {
+  font-family: var(--vscode-editor-font-family, monospace);
+  font-size: 12px;
+  opacity: 0.75;
+  flex-shrink: 0;
+}
+
+.terminal-input {
+  flex: 1;
+  min-width: 0;
+  padding: 2px 4px;
+  background: var(--vscode-input-background, transparent);
+  border: 1px solid var(--vscode-input-border, transparent);
+  outline: none;
+  color: var(--vscode-input-foreground, var(--vscode-foreground));
+  font-family: var(--vscode-editor-font-family, monospace);
+  font-size: 12px;
+}
+
+.terminal-input:focus {
+  border-color: var(--vscode-focusBorder);
+}
+
+.terminal-input:disabled {
+  opacity: 0.5;
+}

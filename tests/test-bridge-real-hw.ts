@@ -14,12 +14,12 @@
 
 import { createRequire } from 'module';
 import * as path from 'path';
-import { BridgeServer } from '../packages/serialagent-vscode/src/bridge-server';
-import { ISerialManager, ILogger, SerialConfig, PortInfo, DEFAULT_CONFIG } from '../packages/serialagent-vscode/src/types';
+import { BridgeServer } from '../packages/serialagent-plus/src/bridge-server';
+import { ISerialManager, ILogger, SerialConfig, PortInfo, DEFAULT_CONFIG } from '../packages/serialagent-plus/src/types';
 
-// serialport 安装在 packages/serialagent-vscode 中，需从该路径解析
+// serialport 安装在 packages/serialagent-plus 中，需从该路径解析
 // 使用 process.cwd() 而非 __dirname，确保预编译后路径仍正确
-const vscodeRequire = createRequire(path.resolve(process.cwd(), 'packages/serialagent-vscode/package.json'));
+const vscodeRequire = createRequire(path.resolve(process.cwd(), 'packages/serialagent-plus/package.json'));
 const { SerialPort } = vscodeRequire('serialport') as any;
 
 // ============================================================
@@ -142,6 +142,10 @@ class RealSerialManager implements ISerialManager {
     this._rxBuffer = Buffer.alloc(0);
   }
 
+  updateSettings(partial: Partial<SerialConfig>): void {
+    Object.assign(this._config, partial);
+  }
+
   resetCounters(): void {
     this._rxBytes = 0;
     this._txBytes = 0;
@@ -152,6 +156,11 @@ class RealSerialManager implements ISerialManager {
     if (this._logBuffer.length > 5000) { this._logBuffer.shift(); }
     console.log(`[INJ] ${line}`);
     for (const cb of this._newLogSubscribers) { cb(line); }
+  }
+
+  injectTxLog(data: string): void {
+    const body = String(data).split('\n').map((line) => `MCP TX>> ${line}`).join('\n');
+    this.injectLog(body);
   }
 
   onNewLog(callback: (line: string) => void): void {
@@ -193,15 +202,40 @@ class ConsoleLogger implements ILogger {
   appendLine(value: string): void { console.log(value); }
 }
 
+/** 单监视器 BridgeHost 适配（real-hw 手动测试用） */
+class SingleHost {
+  constructor(private readonly sm: RealSerialManager) {}
+  list() {
+    return [{
+      id: 'm1', index: 1, name: 'Serial Monitor1',
+      connected: this.sm.isConnected, port: this.sm.currentPath, baudRate: this.sm.currentBaudRate,
+    }];
+  }
+  runtimeByRef(ref: number | string) {
+    const key = String(ref).toLowerCase();
+    if (key === '1' || key === 'serial monitor1') { return this.primary(); }
+    return undefined;
+  }
+  primary() { return { meta: { id: 'm1', index: 1, name: 'Serial Monitor1', config: this.sm.config }, manager: this.sm }; }
+  createMonitor(): never { throw new Error('Monitor limit reached (10)'); }
+  deleteMonitor(): never { throw new Error('At least one monitor must remain'); }
+  renameMonitor(): never { throw new Error('Rename not supported'); }
+  updateMonitorConfig(_id: string, partial: Partial<SerialConfig>) { this.sm.updateSettings(partial); return this.sm.config; }
+  async connect(_id: string, config: SerialConfig) {
+    const ok = await this.sm.connect(config);
+    return ok ? { ok: true } : { ok: false, error: 'Failed to connect' };
+  }
+}
+
 async function main() {
   const sm = new RealSerialManager();
   const logger = new ConsoleLogger();
-  const bridge = new BridgeServer(sm, logger);
+  const bridge = new BridgeServer(new SingleHost(sm), logger);
 
   await bridge.start();
 
   console.log('');
-  console.log('=== Serial Agent Bridge Server (Real Hardware) ===');
+  console.log('=== Serial Agent Plus Bridge Server (Real Hardware) ===');
   console.log(`Port:  127.0.0.1:${bridge.port}`);
   console.log(`Token: ${bridge.token}`);
   console.log('');
