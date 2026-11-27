@@ -22,6 +22,7 @@ Thumbs.db
 
 # npm
 *.tgz
+.npmrc
 
 # VS Code Extension
 packages/serialagent-plus/vsix-package-backup/
